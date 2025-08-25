@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Control Panel - Crypto Monitor</title>
+    <style>
+        body { font-family: system-ui, sans-serif; margin: 0; background: #0a0a0a; color: #ffffff; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        .header { text-align: center; margin-bottom: 30px; }
+        .header h1 { color: #00ff88; font-size: 2.2em; }
+        .panel { background: #1a1a2e; padding: 25px; border-radius: 12px; margin: 20px 0; }
+        .btn { background: #00ff88; color: #000; padding: 12px 20px; border: none; border-radius: 8px; 
+               font-weight: 600; cursor: pointer; margin: 5px; }
+        .btn-danger { background: #ff4444; color: #fff; }
+        .btn-secondary { background: #666; color: #fff; }
+        .results { background: #2a2a3e; color: #fff; padding: 15px; border-radius: 8px; 
+                  margin-top: 15px; font-family: monospace; font-size: 0.9em; min-height: 100px; }
+        .form-group { margin: 15px 0; }
+        .form-group input, .form-group select { width: 100%; padding: 10px; background: #2a2a3e; 
+                                              border: 1px solid #444; border-radius: 6px; color: #fff; }
+        .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .status-card { background: #2a2a3e; padding: 20px; border-radius: 8px; text-align: center; }
+        .status-ok { border-left: 4px solid #00ff88; }
+        .status-error { border-left: 4px solid #ff4444; }
+        .status-warning { border-left: 4px solid #ffaa00; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>⚙️ Control Panel</h1>
+            <p><a href="/" style="color: #00ff88;">← Back to Dashboard</a></p>
+            <p><strong>Service URL:</strong> <span id="serviceUrl">{{ base_url }}</span></p>
+        </div>
+        
+        <!-- Status Overview -->
+        <div class="panel">
+            <h3>📊 System Status</h3>
+            <div class="status-grid">
+                <div class="status-card" id="healthCard">
+                    <h4>🏥 Service Health</h4>
+                    <div id="healthStatus">Checking...</div>
+                </div>
+                <div class="status-card" id="telegramCard">
+                    <h4>📱 Telegram</h4>
+                    <div id="telegramStatus">Checking...</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Monitor Control -->
+        <div class="panel">
+            <h3>🎛️ Monitor Control</h3>
+            <button class="btn" onclick="controlMonitor('start')">▶️ Start Monitor</button>
+            <button class="btn btn-danger" onclick="controlMonitor('stop')">⏹️ Stop Monitor</button>
+            <button class="btn btn-secondary" onclick="refreshStatus()">🔄 Refresh Status</button>
+        </div>
+        
+        <!-- Telegram Testing -->
+        <div class="panel">
+            <h3>📱 Telegram Testing</h3>
+            <button class="btn" onclick="testTelegram()">📤 Send Test Message</button>
+            <button class="btn" onclick="simulateAlert()">🚨 Simulate Alert</button>
+            <button class="btn btn-secondary" onclick="checkTelegramStatus()">📋 Check Config</button>
+        </div>
+        
+        <!-- Analysis -->
+        <div class="panel">
+            <h3>📊 Run Analysis</h3>
+            <div class="form-group">
+                <label>Network:</label>
+                <select id="network">
+                    <option value="ethereum">Ethereum</option>
+                    <option value="base">Base</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Analysis Type:</label>
+                <select id="analysisType">
+                    <option value="buy">Buy Analysis</option>
+                    <option value="sell">Sell Analysis</option>
+                </select>
+            </div>
+            <button class="btn" onclick="runAnalysis()">🔍 Run Analysis</button>
+            <a href="/analysis/results" class="btn btn-secondary" target="_blank">📋 View Results</a>
+        </div>
+        
+        <!-- Results Area -->
+        <div class="panel">
+            <h3>📋 Results</h3>
+            <div class="results" id="results">Ready for operations...</div>
+        </div>
+        
+        <!-- Quick Links -->
+        <div class="panel">
+            <h3>🔗 Quick Links</h3>
+            <a href="/health" class="btn btn-secondary" target="_blank">Health Check</a>
+            <a href="/telegram/status" class="btn btn-secondary" target="_blank">Telegram Status</a>
+            <a href="/analysis/results" class="btn btn-secondary" target="_blank">Analysis Results</a>
+            <a href="/scheduler/script" class="btn btn-secondary" target="_blank">Scheduler Script</a>
+        </div>
+    </div>
+    
+    <script>
+        const baseUrl = '{{ base_url }}' || window.location.origin;
+        
+        function updateResults(data) {
+            const resultsDiv = document.getElementById('results');
+            if (typeof data === 'string') {
+                resultsDiv.textContent = data;
+            } else {
+                resultsDiv.textContent = JSON.stringify(data, null, 2);
+            }
+        }
+        
+        async function apiCall(endpoint, method = 'GET', data = null) {
+            const url = `${baseUrl}${endpoint}`;
+            updateResults(`Making ${method} request to ${endpoint}...`);
+            
+            try {
+                const options = {
+                    method: method,
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'Cache-Control': 'no-cache'
+                    },
+                    mode: 'cors',
+                    credentials: 'same-origin'
+                };
+                
+                if (data) {
+                    options.body = JSON.stringify(data);
+                }
+                
+                const response = await fetch(url, options);
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${errorText}`);
+                }
+                
+                const result = await response.json();
+                return result;
+            } catch (error) {
+                console.error('API call failed:', error);
+                updateResults(`Error: ${error.message}`);
+                
+                // Show more helpful error messages
+                if (error.message.includes('Failed to fetch')) {
+                    updateResults(`Network Error: Unable to connect to ${endpoint}\nTry testing this endpoint directly in your browser: ${url}`);
+                }
+                throw error;
+            }
+        }
+        
+        async function refreshStatus() {
+            // Check service health
+            try {
+                const health = await apiCall('/health');
+                const healthCard = document.getElementById('healthCard');
+                const healthStatus = document.getElementById('healthStatus');
+                
+                healthCard.className = 'status-card status-ok';
+                healthStatus.innerHTML = `
+                    <div>✅ Service Running</div>
+                    <div style="font-size: 0.9em; margin-top: 5px;">
+                        Monitoring: ${health.monitoring_active ? '✅ Active' : '⏹️ Stopped'}<br>
+                        Database: ${health.database_connected ? '✅ Connected' : '❌ Disconnected'}
+                    </div>
+                `;
+            } catch (error) {
+                const healthCard = document.getElementById('healthCard');
+                const healthStatus = document.getElementById('healthStatus');
+                healthCard.className = 'status-card status-error';
+                healthStatus.innerHTML = '❌ Service Error';
+            }
+            
+            // Check Telegram status
+            try {
+                const telegram = await apiCall('/telegram/status');
+                const telegramCard = document.getElementById('telegramCard');
+                const telegramStatus = document.getElementById('telegramStatus');
+                
+                if (telegram.configured) {
+                    telegramCard.className = 'status-card status-ok';
+                    telegramStatus.innerHTML = '✅ Configured & Ready';
+                } else {
+                    telegramCard.className = 'status-card status-warning';
+                    telegramStatus.innerHTML = '⚠️ Not Configured';
+                }
+            } catch (error) {
+                const telegramCard = document.getElementById('telegramCard');
+                const telegramStatus = document.getElementById('telegramStatus');
+                telegramCard.className = 'status-card status-error';
+                telegramStatus.innerHTML = '❌ Check Failed';
+            }
+        }
+        
+        async function testTelegram() {
+            try {
+                updateResults('Sending test Telegram message...');
+                const result = await apiCall('/telegram/test', 'POST');
+                updateResults(result);
+                if (result.success) {
+                    alert('✅ Test message sent successfully!');
+                } else {
+                    alert('❌ Test message failed. Check configuration.');
+                }
+            } catch (error) {
+                alert('❌ Telegram test failed: ' + error.message);
+            }
+        }
+        
+        async function simulateAlert() {
+            try {
+                updateResults('Simulating alert...');
+                const result = await apiCall('/alerts/simulate', 'POST');
+                updateResults(result);
+                alert('🚨 Alert simulation sent!');
+            } catch (error) {
+                alert('❌ Alert simulation failed: ' + error.message);
+            }
+        }
+        
+        async function checkTelegramStatus() {
+            try {
+                const result = await apiCall('/telegram/status');
+                updateResults(result);
+            } catch (error) {
+                // Error already handled by apiCall
+            }
+        }
+        
+        async function runAnalysis() {
+            const network = document.getElementById('network').value;
+            const analysisType = document.getElementById('analysisType').value;
+            
+            try {
+                updateResults(`Running ${analysisType} analysis on ${network}...`);
+                const result = await apiCall('/analysis/run', 'POST', {
+                    network: network,
+                    analysis_type: analysisType,
+                    num_wallets: 50,
+                    days_back: 1.0
+                });
+                updateResults(result);
+                alert(`✅ Analysis complete! Found ${result.unique_tokens} tokens with ${result.total_transactions} transactions`);
+            } catch (error) {
+                alert('❌ Analysis failed: ' + error.message);
+            }
+        }
+        
+        async function controlMonitor(action) {
+            try {
+                updateResults(`${action}ing monitor...`);
+                const result = await apiCall(`/monitor/${action}`, 'POST');
+                updateResults(result);
+                alert(`✅ Monitor ${action}ed successfully!`);
+                setTimeout(refreshStatus, 1000);
+            } catch (error) {
+                alert(`❌ Failed to ${action} monitor: ` + error.message);
+            }
+        }
+        
+        // Initialize on load
+        window.onload = function() {
+            refreshStatus();
+            setInterval(refreshStatus, 30000); // Refresh every 30 seconds
+        };
+    </script>
+</body>
+</html>

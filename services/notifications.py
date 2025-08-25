@@ -16,7 +16,17 @@ class TelegramClient:
         
     async def __aenter__(self):
         if self.bot_token and self.chat_id:
-            self._client = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
+            # Configure HTTP/2 client with better timeout and retry settings
+            timeout = httpx.Timeout(30.0, connect=10.0)
+            limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
+            
+            self._client = httpx.AsyncClient(
+                timeout=timeout,
+                limits=limits,
+                http2=True,  # Enable HTTP/2
+                verify=True,
+                follow_redirects=True
+            )
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -25,6 +35,7 @@ class TelegramClient:
     
     async def send_message(self, message: str) -> bool:
         if not self._client or not self.bot_token or not self.chat_id:
+            logger.warning("Telegram client not configured")
             return False
         
         try:
@@ -36,9 +47,28 @@ class TelegramClient:
                 "disable_web_page_preview": True
             }
             
-            response = await self._client.post(url, json=payload)
-            return response.status_code == 200
+            # Use HTTP/2 with proper headers
+            headers = {
+                "Content-Type": "application/json",
+                "User-Agent": "CryptoMonitor/2.0",
+                "Accept": "application/json"
+            }
             
+            response = await self._client.post(url, json=payload, headers=headers)
+            
+            if response.status_code == 200:
+                logger.info("Telegram message sent successfully")
+                return True
+            else:
+                logger.error(f"Telegram API error: {response.status_code} - {response.text}")
+                return False
+                
+        except httpx.TimeoutException:
+            logger.error("Telegram request timeout")
+            return False
+        except httpx.HTTPError as e:
+            logger.error(f"Telegram HTTP error: {e}")
+            return False
         except Exception as e:
             logger.error(f"Telegram send failed: {e}")
             return False
@@ -53,12 +83,18 @@ async def send_alert_notifications(alerts: list):
     async with telegram_client:
         for alert in alerts:
             message = format_alert_message(alert)
-            await telegram_client.send_message(message)
-            await asyncio.sleep(1)  # Rate limiting
+            success = await telegram_client.send_message(message)
+            if success:
+                logger.info(f"Alert sent for {alert.get('token', 'unknown')}")
+            else:
+                logger.error(f"Failed to send alert for {alert.get('token', 'unknown')}")
+            
+            # Rate limiting - wait between messages
+            await asyncio.sleep(1)
 
 async def send_test_notification():
     """Send test notification"""
-    test_message = f" **TEST NOTIFICATION**\n\n Crypto Monitor is working!\n {datetime.now().strftime('%H:%M:%S')}"
+    test_message = f"🧪 **TEST NOTIFICATION**\n\n✅ Crypto Monitor is working!\n🕐 {datetime.now().strftime('%H:%M:%S')}\n🌐 HTTP/2 Enabled"
     
     async with telegram_client:
         return await telegram_client.send_message(test_message)
@@ -76,10 +112,10 @@ def format_alert_message(alert: dict) -> str:
     alert_type = alert.get('alert_type', 'unknown')
     
     if alert_type == 'new_token':
-        emoji = ""
+        emoji = "🆕"
         score = data.get('alpha_score', 0)
     else:
-        emoji = ""
+        emoji = "📉"
         score = data.get('sell_score', 0)
     
     eth_value = data.get('total_eth_spent') or data.get('total_eth_value', 0)
@@ -87,14 +123,15 @@ def format_alert_message(alert: dict) -> str:
     message = f"""
 {emoji} **{alert_type.replace('_', ' ').upper()}**
 
- **Token:** `{alert['token']}`
- **Network:** {alert['network'].upper()}
- **Score:** {score:.1f}
- **ETH:** {eth_value:.4f}
- **Wallets:** {data.get('wallet_count', 0)}
- **Confidence:** {alert['confidence']}
+🪙 **Token:** `{alert['token']}`
+🌐 **Network:** {alert['network'].upper()}
+📊 **Score:** {score:.1f}
+💰 **ETH:** {eth_value:.4f}
+👥 **Wallets:** {data.get('wallet_count', 0)}
+🎯 **Confidence:** {alert['confidence']}
 
- {datetime.now().strftime('%H:%M:%S')}
+⏰ {datetime.now().strftime('%H:%M:%S')}
+🚀 HTTP/2 Enabled
 """
     
     return message.strip()

@@ -1,36 +1,87 @@
-﻿import logging
+﻿import pandas as pd
+import numpy as np
 from typing import List, Dict
 from datetime import datetime
-from core.data.models import AnalysisResult
+from .base_analyzer import BaseAnalyzer
+from api.models.data_models import AnalysisResult, WalletInfo, Purchase
+from services.database.data_processor import DataProcessor
 
-logger = logging.getLogger(__name__)
-
-class SellAnalyzer:
+class CloudSellAnalyzer(BaseAnalyzer):
+    """Cloud-optimized Sell analyzer"""
+    
     def __init__(self, network: str):
-        self.network = network
+        super().__init__(network)
+        self.data_processor = DataProcessor()
     
-    async def __aenter__(self):
-        return self
+    def _get_analysis_type(self) -> str:
+        return "sell"
     
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        pass
-    
-    async def analyze_wallets_concurrent(self, num_wallets: int = 50, days_back: float = 1.0) -> AnalysisResult:
-        """Placeholder sell analysis - replace with your full implementation"""
-        logger.info(f"Running placeholder sell analysis for {self.network}")
+    async def _process_data(self, wallets: List[WalletInfo], 
+                          all_transfers: Dict) -> AnalysisResult:
+        """Process transfers to identify sell transactions"""
         
-        # Placeholder data - replace with real analysis
-        ranked_tokens = [
-            ("PLACEHOLDER_TOKEN", {"total_eth_value": 0.05, "wallet_count": 1, "methods": ["Transfer"]}, 15.0)
-        ]
+        # Convert transfers to sells
+        sells = self.data_processor.process_transfers_to_sells(
+            wallets, all_transfers, self.network
+        )
+        
+        if not sells:
+            return self._empty_result()
+        
+        # Analyze sells using pandas
+        analysis_results = self.data_processor.analyze_purchases(sells, "sell")
+        
+        # Create result
+        return self._create_result(analysis_results, sells)
+    
+    def _create_result(self, analysis_results: Dict, 
+                      sells: List[Purchase]) -> AnalysisResult:
+        """Create analysis result for sells"""
+        
+        if not analysis_results:
+            return self._empty_result()
+        
+        token_stats = analysis_results.get('token_stats')
+        scores = analysis_results.get('scores', {})
+        
+        # Create ranked tokens
+        ranked_tokens = []
+        contract_lookup = {s.token_bought: s.web3_analysis.get('contract_address', '') 
+                          for s in sells if s.web3_analysis}
+        
+        if token_stats is not None:
+            for token in scores.keys():
+                if token in token_stats.index:
+                    stats_data = token_stats.loc[token]
+                    score_data = scores[token]
+                    
+                    token_data = {
+                        'total_eth_value': float(stats_data['total_value']),
+                        'wallet_count': int(stats_data['unique_wallets']),
+                        'total_sells': int(stats_data['tx_count']),
+                        'avg_wallet_score': float(stats_data['avg_score']),
+                        'methods': ['Transfer'],
+                        'contract_address': contract_lookup.get(token, ''),
+                        'sell_pressure_score': score_data['total_score'],
+                        'is_base_native': self.network == 'base'
+                    }
+                    
+                    ranked_tokens.append((token, token_data, score_data['total_score']))
+        
+        # Sort by score
+        ranked_tokens.sort(key=lambda x: x[2], reverse=True)
+        
+        # Calculate totals
+        total_eth = sum(s.amount_received for s in sells)
+        unique_tokens = len(set(s.token_bought for s in sells))
         
         return AnalysisResult(
             network=self.network,
-            analysis_type="sell", 
-            total_transactions=1,
-            unique_tokens=1,
-            total_eth_value=0.05,
+            analysis_type="sell",
+            total_transactions=len(sells),
+            unique_tokens=unique_tokens,
+            total_eth_value=total_eth,
             ranked_tokens=ranked_tokens,
-            performance_metrics={"placeholder": True},
-            web3_enhanced=False
+            performance_metrics=self.stats,
+            web3_enhanced=True
         )

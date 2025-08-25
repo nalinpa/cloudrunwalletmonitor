@@ -5,12 +5,9 @@ from datetime import datetime
 from typing import Dict, Any
 import json
 
-# Cloud Run imports (NOT Cloud Functions)
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-import uvicorn
+# Cloud Functions imports (NOT FastAPI/uvicorn)
+import functions_framework
+from flask import Request
 
 # Your existing imports
 from utils.logger import setup_logging
@@ -22,30 +19,8 @@ from core.analysis.sell_analyzer import CloudSellAnalyzer
 setup_logging()
 logger = logging.getLogger(__name__)
 
-app = FastAPI(
-    title="Crypto Monitor",
-    description="Smart wallet analysis and monitoring system",
-    version="2.0.0"
-)
-
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Global analyzer instances (reused across requests)
 _analyzers = {}
-
-# Pydantic model for request validation
-class AnalysisRequest(BaseModel):
-    network: str = "ethereum"
-    analysis_type: str = "buy"
-    num_wallets: int = 50
-    days_back: float = 1.0
 
 async def get_analyzer(network: str, analysis_type: str):
     """Get or create analyzer instance"""
@@ -61,78 +36,6 @@ async def get_analyzer(network: str, analysis_type: str):
         _analyzers[key] = analyzer
     
     return _analyzers[key]
-
-# Convert your Cloud Function to FastAPI endpoints
-@app.get("/")
-async def root():
-    """Root endpoint - health check"""
-    return {
-        "message": "Crypto Monitor is running!",
-        "status": "healthy",
-        "version": "2.0.0",
-        "service": "crypto-analysis"
-    }
-
-@app.get("/health")
-async def health_check():
-    """Detailed health check"""
-    return {
-        "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat(),
-        "analyzers_loaded": len(_analyzers),
-        "environment": os.getenv("ENVIRONMENT", "production"),
-        "service": "crypto-monitor"
-    }
-
-@app.post("/analysis")
-async def run_analysis(request: AnalysisRequest):
-    """Main analysis endpoint - converted from Cloud Function"""
-    try:
-        logger.info(f"Running {request.analysis_type} analysis for {request.network}")
-        
-        # Run the analysis logic from your original function
-        result = await _run_analysis(request.dict())
-        
-        return JSONResponse(content=result)
-        
-    except Exception as e:
-        logger.error(f"Analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/")
-async def main_endpoint(request: Request):
-    """Main endpoint for compatibility - handles POST requests like Cloud Function"""
-    try:
-        # Handle CORS preflight
-        if request.method == 'OPTIONS':
-            return JSONResponse(
-                content="",
-                status_code=204,
-                headers={
-                    'Access-Control-Allow-Origin': '*',
-                    'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
-                    'Access-Control-Allow-Headers': 'Content-Type',
-                    'Access-Control-Max-Age': '3600'
-                }
-            )
-        
-        # Parse JSON request
-        try:
-            request_json = await request.json()
-        except:
-            raise HTTPException(status_code=400, detail="No JSON data provided")
-        
-        # Run analysis
-        result = await _run_analysis(request_json)
-        
-        return JSONResponse(
-            content=result,
-            headers={'Access-Control-Allow-Origin': '*'}
-        )
-        
-    except Exception as e:
-        logger.error(f"Main endpoint failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 async def _run_analysis(request_data: Dict) -> Dict[str, Any]:
     """Run the analysis with validation - your existing logic"""
@@ -165,3 +68,93 @@ async def _run_analysis(request_data: Dict) -> Dict[str, Any]:
         'timestamp': datetime.utcnow().isoformat(),
         'success': True
     }
+
+@functions_framework.http
+def crypto_analysis_function(request: Request):
+    """Cloud Functions HTTP entry point"""
+    
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        headers = {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type',
+            'Access-Control-Max-Age': '3600'
+        }
+        return ('', 204, headers)
+    
+    # Set CORS headers for main response
+    headers = {
+        'Access-Control-Allow-Origin': '*',
+        'Content-Type': 'application/json'
+    }
+    
+    try:
+        # Handle GET request (health check)
+        if request.method == 'GET':
+            return (
+                json.dumps({
+                    "message": "Crypto Analysis Function is running!",
+                    "status": "healthy",
+                    "version": "2.0.0",
+                    "service": "crypto-analysis-cloud-function",
+                    "timestamp": datetime.utcnow().isoformat()
+                }), 
+                200, 
+                headers
+            )
+        
+        # Handle POST request (analysis)
+        if request.method == 'POST':
+            # Get JSON data
+            request_json = request.get_json(silent=True)
+            if not request_json:
+                return (
+                    json.dumps({"error": "No JSON data provided"}), 
+                    400, 
+                    headers
+                )
+            
+            logger.info(f"Running analysis request: {request_json}")
+            
+            # Run analysis (convert async to sync for Cloud Functions)
+            try:
+                # Create new event loop for the analysis
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    result = loop.run_until_complete(_run_analysis(request_json))
+                    return (json.dumps(result), 200, headers)
+                finally:
+                    loop.close()
+                    
+            except Exception as e:
+                logger.error(f"Analysis failed: {e}")
+                error_response = {
+                    "error": str(e),
+                    "success": False,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+                return (json.dumps(error_response), 500, headers)
+        
+        # Method not allowed
+        return (
+            json.dumps({"error": "Method not allowed"}), 
+            405, 
+            headers
+        )
+        
+    except Exception as e:
+        logger.error(f"Function failed: {e}")
+        error_response = {
+            "error": f"Function error: {str(e)}",
+            "success": False,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        return (json.dumps(error_response), 500, headers)
+
+# For local testing (not used in Cloud Functions)
+if __name__ == "__main__":
+    import functions_framework
+    # This won't be called in Cloud Functions, but useful for local testing
+    pass

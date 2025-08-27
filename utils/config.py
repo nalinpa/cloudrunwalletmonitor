@@ -2,7 +2,7 @@ import os
 from typing import List
 
 class Config:
-    """Configuration management for Cloud Function"""
+    """Configuration management for Cloud Function - Updated for universal wallet storage"""
     
     def __init__(self):
         self.mongo_uri = os.getenv('MONGO_URI')
@@ -13,7 +13,7 @@ class Config:
         self.log_level = os.getenv('LOG_LEVEL', 'INFO')
         
         # Function limits
-        self.max_wallets = 100
+        self.max_wallets = 200  # Increased since we're not filtering by network
         self.max_days_back = 7.0
         self.timeout_seconds = 300
         
@@ -29,8 +29,15 @@ class Config:
         
         # Network specific settings
         self.blocks_per_hour = {
-            'ethereum': 300,
-            'base': 1800
+            'ethereum': 300,   # ~12 second blocks
+            'base': 1800       # ~2 second blocks
+        }
+        
+        # Since wallets are universal, we need to be more selective about which ones to analyze
+        # for each network to avoid timeout issues
+        self.network_wallet_limits = {
+            'ethereum': 100,  # Analyze top 100 wallets for Ethereum
+            'base': 100       # Analyze top 100 wallets for Base
         }
     
     def validate(self) -> List[str]:

@@ -1,42 +1,42 @@
-# Cloud Functions Comprehensive Test Script
+# Comprehensive Telegram Notifications Test Script
 param(
-    [string]$FunctionUrl = "",
-    [string]$ProjectId = "crypto-tracker-cloudrun",
-    [string]$Region = "asia-southeast1", 
-    [string]$FunctionName = "crypto-analysis-function"
+    [string]$MainFunctionUrl = "",
+    [string]$ProjectId = "",
+    [string]$Region = "asia-southeast1"
 )
 
-Write-Host "🧪 COMPREHENSIVE CLOUD FUNCTIONS TEST SUITE" -ForegroundColor Cyan
-Write-Host "============================================" -ForegroundColor Cyan
+Write-Host "📱 COMPREHENSIVE TELEGRAM NOTIFICATIONS TEST SUITE" -ForegroundColor Cyan
+Write-Host "=================================================" -ForegroundColor Cyan
 
-# Get function URL if not provided
-if ([string]::IsNullOrEmpty($FunctionUrl)) {
-    Write-Host "🔍 Getting function URL..." -ForegroundColor Yellow
+# Get function URLs if not provided
+if ([string]::IsNullOrEmpty($MainFunctionUrl) -and ![string]::IsNullOrEmpty($ProjectId)) {
+    Write-Host "🔍 Getting function URLs..." -ForegroundColor Yellow
     try {
-        $FunctionUrl = gcloud functions describe $FunctionName --region=$Region --format="value(serviceConfig.uri)" 2>$null
-        if ([string]::IsNullOrEmpty($FunctionUrl)) {
-            Write-Host "❌ Could not get function URL. Please provide it manually." -ForegroundColor Red
-            Write-Host "Usage: .\test-function.ps1 -FunctionUrl 'YOUR_FUNCTION_URL'" -ForegroundColor Yellow
+        $MainFunctionUrl = gcloud functions describe "crypto-analysis-function" --region=$Region --format="value(serviceConfig.uri)" 2>$null
+        if ([string]::IsNullOrEmpty($MainFunctionUrl)) {
+            Write-Host "❌ Could not get main function URL. Please provide it manually." -ForegroundColor Red
+            Write-Host "Usage: .\test-telegram.ps1 -MainFunctionUrl 'YOUR_FUNCTION_URL'" -ForegroundColor Yellow
             exit 1
         }
-        Write-Host "✅ Function URL: $FunctionUrl" -ForegroundColor Green
     } catch {
-        Write-Host "❌ Failed to get function URL: $_" -ForegroundColor Red
+        Write-Host "❌ Failed to get function URL. Please provide it manually." -ForegroundColor Red
         exit 1
     }
 }
 
-Write-Host "Function URL: $FunctionUrl" -ForegroundColor White
-Write-Host "Project: $ProjectId" -ForegroundColor White
-Write-Host "Region: $Region" -ForegroundColor White
-Write-Host "Function: $FunctionName" -ForegroundColor White
-Write-Host "============================================" -ForegroundColor Cyan
+if ([string]::IsNullOrEmpty($MainFunctionUrl)) {
+    $MainFunctionUrl = Read-Host "Please enter your main function URL"
+}
+
+Write-Host "Main Function URL: $MainFunctionUrl" -ForegroundColor White
+Write-Host "Testing Telegram integration..." -ForegroundColor White
+Write-Host "=================================================" -ForegroundColor Cyan
 
 $global:testResults = @()
 $global:testNumber = 1
 
 # Helper function to run test
-function Run-Test {
+function Run-TelegramTest {
     param(
         [string]$TestName,
         [string]$Method = "GET",
@@ -51,7 +51,27 @@ function Run-Test {
         Write-Host "   $Description" -ForegroundColor Gray
     }
     
-    $url = $FunctionUrl + $Endpoint
+    # Try to get specific function URL for Telegram endpoints
+    if ($Endpoint.StartsWith("telegram-")) {
+        $functionName = $Endpoint
+        $url = ""
+        
+        if (![string]::IsNullOrEmpty($ProjectId)) {
+            try {
+                $url = gcloud functions describe $functionName --region=$Region --format="value(serviceConfig.uri)" 2>$null
+            } catch {
+                # Fall back to main URL
+                $url = $MainFunctionUrl
+            }
+        }
+        
+        if ([string]::IsNullOrEmpty($url)) {
+            $url = $MainFunctionUrl
+        }
+    } else {
+        $url = $MainFunctionUrl + $Endpoint
+    }
+    
     $success = $false
     $responseData = $null
     $statusCode = 0
@@ -63,7 +83,7 @@ function Run-Test {
         if ($Method -eq "GET") {
             $response = Invoke-WebRequest -Uri $url -Method GET -UseBasicParsing -TimeoutSec 30
         } else {
-            $jsonBody = $Body | ConvertTo-Json -Depth 10
+            $jsonBody = if ($Body) { $Body | ConvertTo-Json -Depth 10 } else { "{}" }
             Write-Host "   📤 Body: $($jsonBody.Substring(0, [Math]::Min(100, $jsonBody.Length)))..." -ForegroundColor Gray
             $response = Invoke-WebRequest -Uri $url -Method $Method -Body $jsonBody -ContentType "application/json" -UseBasicParsing -TimeoutSec 60
         }
@@ -78,18 +98,27 @@ function Run-Test {
             try {
                 $responseData = $response.Content | ConvertFrom-Json
                 
-                # Show key response fields
-                if ($responseData.status) {
-                    Write-Host "   📊 Status: $($responseData.status)" -ForegroundColor White
+                # Show key response fields for Telegram tests
+                if ($responseData.configured -ne $null) {
+                    Write-Host "   📱 Telegram Configured: $($responseData.configured)" -ForegroundColor $(if ($responseData.configured) {'Green'} else {'Red'})
+                }
+                if ($responseData.success -ne $null) {
+                    Write-Host "   🎯 Success: $($responseData.success)" -ForegroundColor $(if ($responseData.success) {'Green'} else {'Red'})
                 }
                 if ($responseData.message) {
                     Write-Host "   💬 Message: $($responseData.message)" -ForegroundColor White
                 }
-                if ($responseData.success -ne $null) {
-                    Write-Host "   🎯 Success: $($responseData.success)" -ForegroundColor White
+                if ($responseData.bot_token_set -ne $null) {
+                    Write-Host "   🤖 Bot Token Set: $($responseData.bot_token_set)" -ForegroundColor $(if ($responseData.bot_token_set) {'Green'} else {'Red'})
                 }
-                if ($responseData.version) {
-                    Write-Host "   🏷️ Version: $($responseData.version)" -ForegroundColor White
+                if ($responseData.chat_id_set -ne $null) {
+                    Write-Host "   💬 Chat ID Set: $($responseData.chat_id_set)" -ForegroundColor $(if ($responseData.chat_id_set) {'Green'} else {'Red'})
+                }
+                if ($responseData.notifications_sent -ne $null) {
+                    Write-Host "   📨 Notifications Sent: $($responseData.notifications_sent)" -ForegroundColor White
+                }
+                if ($responseData.telegram_configured -ne $null) {
+                    Write-Host "   ⚙️ Telegram Integration: $($responseData.telegram_configured)" -ForegroundColor $(if ($responseData.telegram_configured) {'Green'} else {'Yellow'})
                 }
                 
             } catch {
@@ -105,7 +134,6 @@ function Run-Test {
         Write-Host "   ❌ FAILED: $($_.Exception.Message)" -ForegroundColor Red
         $errorMessage = $_.Exception.Message
         
-        # Try to get status code from exception
         if ($_.Exception.Response) {
             $statusCode = [int]$_.Exception.Response.StatusCode
             Write-Host "   🔢 HTTP Status: $statusCode" -ForegroundColor Red
@@ -124,148 +152,105 @@ function Run-Test {
     $global:testResults = $global:testResults + $testResult
     
     $global:testNumber++
-    Start-Sleep -Seconds 1
-}
-
-# Start testing
-Write-Host "`n🚀 STARTING TESTS..." -ForegroundColor Green
-
-# Test 1: Basic Health Check
-Run-Test -TestName "Health Check" -Description "Basic function availability test"
-
-# Test 2: Health Check with Debug
-Run-Test -TestName "Debug Health Check" -Endpoint "?debug=true" -Description "Health check with configuration info"
-
-# Test 3: CORS Preflight
-Run-Test -TestName "CORS Preflight" -Method "OPTIONS" -Description "CORS preflight request" -ExpectedStatus 204
-
-# Test 4: Invalid Method
-Run-Test -TestName "Invalid Method" -Method "PUT" -Description "Test error handling" -ExpectedStatus 405
-
-# Test 5: Empty POST Body
-Run-Test -TestName "Empty POST Body" -Method "POST" -Description "POST without JSON body" -ExpectedStatus 400
-
-# Test 6: Basic Analysis - Ethereum Buy (Debug Mode)
-Run-Test -TestName "Ethereum Buy Analysis (Debug)" -Method "POST" -Body @{
-    network = "ethereum"
-    analysis_type = "buy"
-    num_wallets = 50
-    days_back = 1.0
-    debug = $true
-} -Description "Debug analysis to check database/API connectivity"
-
-# Test 7: Basic Analysis - Base Buy (Debug Mode)  
-Run-Test -TestName "Base Buy Analysis (Debug)" -Method "POST" -Body @{
-    network = "base"
-    analysis_type = "buy"
-    num_wallets = 50
-    days_back = 1.0
-    debug = $true
-} -Description "Debug analysis for Base network"
-
-# Test 8: Longer Timeframe Test
-Run-Test -TestName "Extended Timeframe Test" -Method "POST" -Body @{
-    network = "ethereum"
-    analysis_type = "buy"
-    num_wallets = 100
-    days_back = 7.0
-    debug = $false
-} -Description "7-day analysis to find more activity"
-
-# Test 9: Sell Analysis
-Run-Test -TestName "Sell Analysis" -Method "POST" -Body @{
-    network = "ethereum"  
-    analysis_type = "sell"
-    num_wallets = 50
-    days_back = 3.0
-    debug = $false
-} -Description "Test sell analysis functionality"
-
-# Test 10: Invalid Network
-Run-Test -TestName "Invalid Network" -Method "POST" -Body @{
-    network = "invalid"
-    analysis_type = "buy"
-    num_wallets = 10
-    days_back = 1.0
-} -Description "Error handling for invalid network" -ExpectedStatus 500
-
-# Test 11: Invalid Analysis Type
-Run-Test -TestName "Invalid Analysis Type" -Method "POST" -Body @{
-    network = "ethereum"
-    analysis_type = "invalid"
-    num_wallets = 10
-    days_back = 1.0
-} -Description "Error handling for invalid analysis type" -ExpectedStatus 500
-
-# Test 12: Large Wallet Count
-Run-Test -TestName "Large Wallet Count" -Method "POST" -Body @{
-    network = "ethereum"
-    analysis_type = "buy"
-    num_wallets = 200
-    days_back = 1.0
-    debug = $false
-} -Description "Test with maximum wallet count"
-
-# Test 13: Performance Test
-Write-Host "`n1️3️⃣ Performance Test" -ForegroundColor Yellow
-Write-Host "   Testing function response time under load" -ForegroundColor Gray
-
-$performanceTimes = @()
-$performanceBody = @{
-    network = "ethereum"
-    analysis_type = "buy"
-    num_wallets = 50
-    days_back = 1.0
-} | ConvertTo-Json
-
-for ($i = 1; $i -le 3; $i++) {
-    Write-Host "   🔄 Performance run $i/3..." -ForegroundColor Gray
-    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-    
-    try {
-        $perfResponse = Invoke-RestMethod -Uri $FunctionUrl -Method POST -Body $performanceBody -ContentType "application/json" -TimeoutSec 90
-        $stopwatch.Stop()
-        $responseTime = $stopwatch.ElapsedMilliseconds
-        $performanceTimes += $responseTime
-        Write-Host "   ⏱️ Response time: ${responseTime}ms" -ForegroundColor White
-    } catch {
-        $stopwatch.Stop()
-        Write-Host "   ❌ Performance test $i failed: $($_.Exception.Message)" -ForegroundColor Red
-    }
-    
     Start-Sleep -Seconds 2
 }
 
-if ($performanceTimes.Count -gt 0) {
-    $avgTime = [int]($performanceTimes | Measure-Object -Average).Average
-    $minTime = ($performanceTimes | Measure-Object -Minimum).Minimum
-    $maxTime = ($performanceTimes | Measure-Object -Maximum).Maximum
-    
-    Write-Host "   📊 Performance Summary:" -ForegroundColor Cyan
-    Write-Host "      Average: ${avgTime}ms" -ForegroundColor White
-    Write-Host "      Min: ${minTime}ms" -ForegroundColor White  
-    Write-Host "      Max: ${maxTime}ms" -ForegroundColor White
-}
+# Start Telegram testing
+Write-Host "`n🚀 STARTING TELEGRAM TESTS..." -ForegroundColor Green
 
-$global:testNumber++
+# Test 1: Main Function Telegram Status
+Run-TelegramTest -TestName "Main Function Telegram Status" -Description "Check if main function reports Telegram configuration"
+
+# Test 2: Main Function Debug (Telegram Info)
+Run-TelegramTest -TestName "Main Function Debug Mode" -Endpoint "?debug=true" -Description "Get detailed Telegram configuration info"
+
+# Test 3: Telegram Status Function
+Run-TelegramTest -TestName "Telegram Status Endpoint" -Endpoint "telegram-status" -Description "Dedicated Telegram status check"
+
+# Test 4: Telegram Test Notification
+Run-TelegramTest -TestName "Send Test Notification" -Method "POST" -Endpoint "telegram-test" -Description "Send a test message to Telegram"
+
+# Test 5: Get Alert Thresholds
+Run-TelegramTest -TestName "Get Alert Thresholds" -Endpoint "telegram-thresholds" -Description "Retrieve current alert thresholds"
+
+# Test 6: Update Alert Thresholds
+Run-TelegramTest -TestName "Update Alert Thresholds" -Method "POST" -Endpoint "telegram-thresholds" -Body @{
+    min_alpha_score = 30.0
+    min_sell_score = 25.0
+    min_eth_value = 0.1
+    min_wallet_count = 5
+} -Description "Update alert thresholds"
+
+# Test 7: Simulate Buy Alert
+Run-TelegramTest -TestName "Simulate Buy Alert" -Method "POST" -Endpoint "telegram-simulate" -Body @{
+    alert_type = "buy"
+} -Description "Simulate a buy alert notification"
+
+# Test 8: Simulate Sell Alert
+Run-TelegramTest -TestName "Simulate Sell Alert" -Method "POST" -Endpoint "telegram-simulate" -Body @{
+    alert_type = "sell"
+} -Description "Simulate a sell alert notification"
+
+# Test 9: Analysis with Notifications Enabled
+Run-TelegramTest -TestName "Analysis with Telegram Notifications" -Method "POST" -Body @{
+    network = "ethereum"
+    analysis_type = "buy"
+    num_wallets = 50
+    days_back = 1.0
+    notifications = $true
+} -Description "Run analysis with Telegram notifications enabled"
+
+# Test 10: Analysis with Notifications Disabled
+Run-TelegramTest -TestName "Analysis without Notifications" -Method "POST" -Body @{
+    network = "base"
+    analysis_type = "sell"
+    num_wallets = 30
+    days_back = 2.0
+    notifications = $false
+} -Description "Run analysis without sending notifications"
+
+# Test 11: Error Scenario (should trigger error notification)
+Run-TelegramTest -TestName "Error Scenario" -Method "POST" -Body @{
+    network = "invalid_network"
+    analysis_type = "buy"
+    notifications = $true
+} -Description "Trigger error to test error notifications" -ExpectedStatus 500
 
 # Generate Test Report
-Write-Host "`n📊 TEST RESULTS SUMMARY" -ForegroundColor Green
-Write-Host "========================" -ForegroundColor Green
+Write-Host "`n📊 TELEGRAM TEST RESULTS SUMMARY" -ForegroundColor Green
+Write-Host "=================================" -ForegroundColor Green
 
 $passedTests = ($global:testResults | Where-Object { $_.Success }).Count
 $totalTests = $global:testResults.Count
-
-if ($totalTests -gt 0) {
-    $successRate = [math]::Round(($passedTests / $totalTests) * 100, 1)
-} else {
-    $successRate = 0
-}
+$successRate = if ($totalTests -gt 0) { [math]::Round(($passedTests / $totalTests) * 100, 1) } else { 0 }
 
 Write-Host "✅ Passed: $passedTests" -ForegroundColor Green
 Write-Host "❌ Failed: $($totalTests - $passedTests)" -ForegroundColor Red
 Write-Host "📈 Success Rate: $successRate%" -ForegroundColor White
 Write-Host "🕒 Total Tests: $totalTests" -ForegroundColor White
+
+# Analyze Telegram configuration
+$telegramConfigured = $false
+$telegramWorking = $false
+
+$statusTests = $global:testResults | Where-Object { $_.Name -like "*Status*" -and $_.Success }
+foreach ($test in $statusTests) {
+    if ($test.ResponseData.configured -eq $true -or $test.ResponseData.telegram_configured -eq $true) {
+        $telegramConfigured = $true
+    }
+}
+
+$notificationTests = $global:testResults | Where-Object { $_.Name -like "*Test Notification*" -and $_.Success }
+foreach ($test in $notificationTests) {
+    if ($test.ResponseData.success -eq $true) {
+        $telegramWorking = $true
+    }
+}
+
+Write-Host "`n📱 TELEGRAM INTEGRATION ANALYSIS:" -ForegroundColor Cyan
+Write-Host "=================================" -ForegroundColor Cyan
+Write-Host "Configuration Status: $(if ($telegramConfigured) {'✅ CONFIGURED'} else {'❌ NOT CONFIGURED'})" -ForegroundColor $(if ($telegramConfigured) {'Green'} else {'Red'})
+Write-Host "Notification Status: $(if ($telegramWorking) {'✅ WORKING'} else {'❌ NOT WORKING'})" -ForegroundColor $(if ($telegramWorking) {'Green'} else {'Red'})
 
 # Show failed tests details
 $failedTests = $global:testResults | Where-Object { -not $_.Success }
@@ -278,110 +263,184 @@ if ($failedTests.Count -gt 0) {
     }
 }
 
-# Show successful debug tests details
-$debugTests = $global:testResults | Where-Object { $_.Name -like "*Debug*" -and $_.Success -and $_.ResponseData.debug_info }
-if ($debugTests.Count -gt 0) {
-    Write-Host "`n🔍 DEBUG INFORMATION:" -ForegroundColor Cyan
-    Write-Host "=====================" -ForegroundColor Cyan
+# Show successful notification tests
+$successfulNotificationTests = $global:testResults | Where-Object { 
+    ($_.Name -like "*Notification*" -or $_.Name -like "*Alert*" -or $_.Name -like "*Simulate*") -and 
+    $_.Success -and 
+    $_.ResponseData.success -eq $true 
+}
+
+if ($successfulNotificationTests.Count -gt 0) {
+    Write-Host "`n✅ SUCCESSFUL TELEGRAM NOTIFICATIONS:" -ForegroundColor Green
+    Write-Host "====================================" -ForegroundColor Green
     
-    foreach ($test in $debugTests) {
-        $debugInfo = $test.ResponseData.debug_info
-        Write-Host "`n📋 $($test.Name):" -ForegroundColor Yellow
+    foreach ($test in $successfulNotificationTests) {
+        Write-Host "• $($test.Name): $($test.ResponseData.message)" -ForegroundColor Green
+    }
+    
+    Write-Host "`n📱 Check your Telegram app for the test messages!" -ForegroundColor Cyan
+}
+
+# Configuration analysis
+$configTests = $global:testResults | Where-Object { $_.Name -like "*Status*" -and $_.Success -and $_.ResponseData }
+if ($configTests.Count -gt 0) {
+    Write-Host "`n⚙️ TELEGRAM CONFIGURATION DETAILS:" -ForegroundColor Yellow
+    Write-Host "===================================" -ForegroundColor Yellow
+    
+    foreach ($test in $configTests) {
+        $data = $test.ResponseData
         
-        if ($debugInfo.database_debug) {
-            $dbDebug = $debugInfo.database_debug
-            Write-Host "   🗄️ Database:" -ForegroundColor White
-            Write-Host "      Connected: $($dbDebug.database_connected)" -ForegroundColor $(if ($dbDebug.database_connected) {'Green'} else {'Red'})
-            if ($dbDebug.total_wallets) {
-                Write-Host "      Total Wallets: $($dbDebug.total_wallets)" -ForegroundColor White
-            }
-            if ($dbDebug.fetched_wallets_count -ne $null) {
-                Write-Host "      Fetched Wallets: $($dbDebug.fetched_wallets_count)" -ForegroundColor White
-            }
-            if ($dbDebug.field_existence) {
-                Write-Host "      Field Existence:" -ForegroundColor White
-                $dbDebug.field_existence.PSObject.Properties | ForEach-Object {
-                    Write-Host "         $($_.Name): $($_.Value)" -ForegroundColor Gray
-                }
+        if ($data.bot_token_set -ne $null) {
+            Write-Host "🤖 Bot Token: $(if ($data.bot_token_set) {'✅ Set'} else {'❌ Missing'})" -ForegroundColor $(if ($data.bot_token_set) {'Green'} else {'Red'})
+        }
+        if ($data.chat_id_set -ne $null) {
+            Write-Host "💬 Chat ID: $(if ($data.chat_id_set) {'✅ Set'} else {'❌ Missing'})" -ForegroundColor $(if ($data.chat_id_set) {'Green'} else {'Red'})
+        }
+        if ($data.alert_thresholds) {
+            Write-Host "🎯 Alert Thresholds:" -ForegroundColor White
+            $data.alert_thresholds.PSObject.Properties | ForEach-Object {
+                Write-Host "   • $($_.Name): $($_.Value)" -ForegroundColor Gray
             }
         }
-        
-        if ($debugInfo.alchemy_debug) {
-            $alchemyDebug = $debugInfo.alchemy_debug
-            Write-Host "   🔗 Alchemy API:" -ForegroundColor White
-            Write-Host "      API Responsive: $($alchemyDebug.alchemy_api_responsive)" -ForegroundColor $(if ($alchemyDebug.alchemy_api_responsive) {'Green'} else {'Red'})
-            if ($alchemyDebug.blocks_in_range) {
-                Write-Host "      Blocks in Range: $($alchemyDebug.blocks_in_range)" -ForegroundColor White
-            }
-            if ($alchemyDebug.alchemy_error) {
-                Write-Host "      Error: $($alchemyDebug.alchemy_error)" -ForegroundColor Red
-            }
-        }
+        break  # Only show first successful config test
     }
 }
 
-# Show analysis results
-$analysisTests = $global:testResults | Where-Object { $_.Name -like "*Analysis*" -and $_.Success -and -not ($_.Name -like "*Debug*") }
+# Analysis integration tests
+$analysisTests = $global:testResults | Where-Object { $_.Name -like "*Analysis*" -and $_.Success }
 if ($analysisTests.Count -gt 0) {
-    Write-Host "`n📊 ANALYSIS RESULTS:" -ForegroundColor Cyan
-    Write-Host "====================" -ForegroundColor Cyan
+    Write-Host "`n📊 ANALYSIS WITH TELEGRAM INTEGRATION:" -ForegroundColor Cyan
+    Write-Host "=====================================" -ForegroundColor Cyan
     
     foreach ($test in $analysisTests) {
-        $result = $test.ResponseData
-        Write-Host "`n🔍 $($test.Name):" -ForegroundColor Yellow
-        if ($result.network) { Write-Host "   Network: $($result.network)" -ForegroundColor White }
-        if ($result.total_transactions -ne $null) { Write-Host "   Transactions: $($result.total_transactions)" -ForegroundColor White }
-        if ($result.unique_tokens -ne $null) { Write-Host "   Unique Tokens: $($result.unique_tokens)" -ForegroundColor White }
-        if ($result.total_eth_value -ne $null) { Write-Host "   Total ETH: $($result.total_eth_value)" -ForegroundColor White }
-        if ($result.top_tokens -and $result.top_tokens.Count -gt 0) {
-            Write-Host "   Top Token: $($result.top_tokens[0][0])" -ForegroundColor White
+        $data = $test.ResponseData
+        Write-Host "🔍 $($test.Name):" -ForegroundColor Yellow
+        
+        if ($data.network) { Write-Host "   Network: $($data.network)" -ForegroundColor White }
+        if ($data.analysis_type) { Write-Host "   Type: $($data.analysis_type)" -ForegroundColor White }
+        if ($data.total_transactions -ne $null) { Write-Host "   Transactions: $($data.total_transactions)" -ForegroundColor White }
+        if ($data.notifications_sent -ne $null) { 
+            Write-Host "   Notifications Sent: $($data.notifications_sent)" -ForegroundColor $(if ($data.notifications_sent -gt 0) {'Green'} else {'Yellow'})
         }
+        if ($data.debug_info.notifications_configured -ne $null) {
+            Write-Host "   Telegram Ready: $($data.debug_info.notifications_configured)" -ForegroundColor $(if ($data.debug_info.notifications_configured) {'Green'} else {'Red'})
+        }
+        Write-Host ""
     }
 }
 
-# Final recommendations
 Write-Host "`n🎯 RECOMMENDATIONS:" -ForegroundColor Yellow
 Write-Host "===================" -ForegroundColor Yellow
 
-if ($successRate -ge 80) {
-    Write-Host "✅ Function is working well overall!" -ForegroundColor Green
+if ($telegramConfigured -and $telegramWorking) {
+    Write-Host "✅ Telegram notifications are fully functional!" -ForegroundColor Green
+    Write-Host "🚀 Your crypto analysis system is ready for production" -ForegroundColor Green
+    Write-Host "📱 You'll receive notifications for high-value token discoveries" -ForegroundColor Cyan
+    
+    Write-Host "`n🔄 Next steps:" -ForegroundColor White
+    Write-Host "1. Set up Cloud Scheduler for automated analysis" -ForegroundColor Gray
+    Write-Host "2. Fine-tune alert thresholds based on your preferences" -ForegroundColor Gray
+    Write-Host "3. Monitor your Telegram chat for real-time alerts" -ForegroundColor Gray
+    
+} elseif ($telegramConfigured -and !$telegramWorking) {
+    Write-Host "⚠️ Telegram is configured but notifications aren't working" -ForegroundColor Yellow
+    Write-Host "🔧 Troubleshooting steps:" -ForegroundColor White
+    Write-Host "1. Verify your bot token is correct" -ForegroundColor Gray
+    Write-Host "2. Check that your chat ID is accurate" -ForegroundColor Gray
+    Write-Host "3. Ensure the bot can send messages to your chat" -ForegroundColor Gray
+    Write-Host "4. Make sure the bot isn't blocked" -ForegroundColor Gray
+    
+} elseif (!$telegramConfigured) {
+    Write-Host "❌ Telegram is not configured" -ForegroundColor Red
+    Write-Host "📱 Setup required:" -ForegroundColor White
+    Write-Host "1. Create a Telegram bot via @BotFather" -ForegroundColor Gray
+    Write-Host "2. Get your chat ID from @userinfobot" -ForegroundColor Gray
+    Write-Host "3. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables" -ForegroundColor Gray
+    Write-Host "4. Redeploy your Cloud Functions" -ForegroundColor Gray
 } else {
-    Write-Host "❌ Function has significant issues that need attention" -ForegroundColor Red
+    Write-Host "🔍 Mixed results - some features may be partially working" -ForegroundColor Yellow
+    Write-Host "📋 Review the test results above for specific issues" -ForegroundColor White
 }
 
-# Check for specific issues
-$hasDbIssues = $debugTests | Where-Object { $_.ResponseData.debug_info.database_debug.database_connected -eq $false }
-$hasApiIssues = $debugTests | Where-Object { $_.ResponseData.debug_info.alchemy_debug.alchemy_api_responsive -eq $false }
-$hasNoData = $analysisTests | Where-Object { $_.ResponseData.total_transactions -eq 0 }
-
-if ($hasDbIssues) {
-    Write-Host "🗄️ Database connection issues detected - check MongoDB URI and credentials" -ForegroundColor Red
+# Show specific function URLs for manual testing
+if (![string]::IsNullOrEmpty($ProjectId)) {
+    Write-Host "`n🔗 FUNCTION URLs FOR MANUAL TESTING:" -ForegroundColor Cyan
+    Write-Host "===================================" -ForegroundColor Cyan
+    
+    $functionNames = @(
+        @{Name="crypto-analysis-function"; Description="Main analysis function"},
+        @{Name="telegram-status"; Description="Telegram status check"},
+        @{Name="telegram-test"; Description="Send test notification"},
+        @{Name="telegram-thresholds"; Description="Manage alert thresholds"},
+        @{Name="telegram-simulate"; Description="Simulate alerts"}
+    )
+    
+    foreach ($func in $functionNames) {
+        try {
+            $url = gcloud functions describe $func.Name --region=$Region --format="value(serviceConfig.uri)" 2>$null
+            if ($url) {
+                Write-Host "🌐 $($func.Description): $url" -ForegroundColor White
+            }
+        } catch {
+            # Function might not exist, skip
+        }
+    }
 }
 
-if ($hasApiIssues) {
-    Write-Host "🔗 Alchemy API issues detected - check API key and network access" -ForegroundColor Red
+Write-Host "`n📱 TELEGRAM NOTIFICATION TYPES:" -ForegroundColor Yellow
+Write-Host "===============================" -ForegroundColor Yellow
+Write-Host "🆕 High Alpha Token Alerts - When promising tokens are discovered" -ForegroundColor Green
+Write-Host "📉 Sell Pressure Warnings - When smart money is selling" -ForegroundColor Yellow
+Write-Host "📊 Analysis Summaries - Overview of each analysis run" -ForegroundColor Blue
+Write-Host "❌ Error Notifications - When analysis encounters problems" -ForegroundColor Red
+Write-Host "🏥 System Status Updates - Health checks and diagnostics" -ForegroundColor Cyan
+Write-Host "🧪 Test Messages - For verifying notification setup" -ForegroundColor Gray
+
+Write-Host "`n⚙️ CUSTOMIZABLE ALERT THRESHOLDS:" -ForegroundColor Yellow
+Write-Host "=================================" -ForegroundColor Yellow
+Write-Host "• min_alpha_score: Minimum score for buy alerts (default: 25.0)" -ForegroundColor White
+Write-Host "• min_sell_score: Minimum score for sell alerts (default: 20.0)" -ForegroundColor White
+Write-Host "• min_eth_value: Minimum ETH value for alerts (default: 0.05)" -ForegroundColor White
+Write-Host "• min_wallet_count: Minimum smart wallets required (default: 3)" -ForegroundColor White
+Write-Host "" -ForegroundColor White
+Write-Host "Adjust these via the telegram-thresholds endpoint" -ForegroundColor Cyan
+
+Write-Host "`n🔧 EXAMPLE CURL COMMANDS:" -ForegroundColor Yellow
+Write-Host "=========================" -ForegroundColor Yellow
+
+if ($MainFunctionUrl) {
+    Write-Host "# Send test notification" -ForegroundColor Gray
+    Write-Host "curl -X POST '$MainFunctionUrl' \" -ForegroundColor Cyan
+    Write-Host "  -H 'Content-Type: application/json' \" -ForegroundColor Cyan
+    Write-Host "  -d '{""network"":""ethereum"",""analysis_type"":""buy"",""notifications"":true}'" -ForegroundColor Cyan
+    
+    Write-Host "`n# Check Telegram status" -ForegroundColor Gray
+    Write-Host "curl '$MainFunctionUrl?debug=true'" -ForegroundColor Cyan
 }
 
-if ($hasNoData) {
-    Write-Host "📊 Analysis returning 0 results - check wallet data and time ranges" -ForegroundColor Yellow
-    Write-Host "   • Try longer time periods (7-14 days)" -ForegroundColor Gray
-    Write-Host "   • Verify wallet data exists in database" -ForegroundColor Gray
-    Write-Host "   • Check field names (address vs wallet_address, score vs rating)" -ForegroundColor Gray
-}
+Write-Host "`n🎊 TELEGRAM TESTING COMPLETE!" -ForegroundColor Green
+Write-Host "=============================" -ForegroundColor Green
 
-Write-Host "`n🔧 NEXT STEPS:" -ForegroundColor Cyan
-if ($hasDbIssues -or $hasApiIssues -or $hasNoData) {
-    Write-Host "1. Review debug information above" -ForegroundColor White
-    Write-Host "2. Check function logs: gcloud functions logs read $FunctionName --region=$Region --limit=50" -ForegroundColor White
-    Write-Host "3. Verify environment variables in Google Cloud Console" -ForegroundColor White
-    Write-Host "4. Test database connectivity separately" -ForegroundColor White
+$overallStatus = if ($telegramConfigured -and $telegramWorking) {
+    "🎉 FULLY FUNCTIONAL"
+} elseif ($telegramConfigured) {
+    "⚠️ NEEDS TROUBLESHOOTING" 
 } else {
-    Write-Host "1. Set up monitoring and alerting" -ForegroundColor White
-    Write-Host "2. Configure Cloud Scheduler for periodic analysis" -ForegroundColor White
-    Write-Host "3. Set up Telegram notifications" -ForegroundColor White
+    "❌ REQUIRES SETUP"
 }
 
-Write-Host "`n🎉 TESTING COMPLETE!" -ForegroundColor Green
-Write-Host "Function URL: $FunctionUrl" -ForegroundColor Cyan
-Write-Host "Overall Health: $(if ($successRate -ge 80) {'✅ HEALTHY'} else {'❌ NEEDS ATTENTION'})" -ForegroundColor $(if ($successRate -ge 80) {'Green'} else {'Red'})
-Write-Host "============================================" -ForegroundColor Green
+Write-Host "Overall Telegram Status: $overallStatus" -ForegroundColor $(
+    if ($telegramConfigured -and $telegramWorking) { 'Green' } 
+    elseif ($telegramConfigured) { 'Yellow' } 
+    else { 'Red' }
+)
+Write-Host "Success Rate: $successRate% ($passedTests/$totalTests tests passed)" -ForegroundColor White
+
+if ($telegramWorking) {
+    Write-Host "`n📱 Check your Telegram app now for test notifications!" -ForegroundColor Cyan
+    Write-Host "🚀 Your crypto analysis system is ready for real-time alerts!" -ForegroundColor Green
+} else {
+    Write-Host "`n🔧 Follow the recommendations above to complete your setup" -ForegroundColor Yellow
+}
+
+Write-Host "=============================" -ForegroundColor Green

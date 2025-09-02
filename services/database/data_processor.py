@@ -4,12 +4,12 @@ import logging
 from typing import List, Dict
 from datetime import datetime
 from api.models.data_models import WalletInfo, Purchase, Transfer, TransferType
-from services.database.transfer_service import TransferService
+from services.database.transfer_service import BigQueryTransferService
 
 logger = logging.getLogger(__name__)
 
 class DataProcessor:
-    """Enhanced data processor that stores all transfers to database"""
+    """Enhanced data processor that stores all transfers to BigQuery"""
     
     def __init__(self):
         # Token exclusion lists
@@ -25,12 +25,13 @@ class DataProcessor:
             '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',  # USDC on Base
         })
         
-        # Transfer service for storing transfer records
-        self.transfer_service: TransferService = None
+        # BigQuery transfer service for storing transfer records
+        self.bigquery_transfer_service: BigQueryTransferService = None
+        self._last_stored_count = 0
     
-    def set_transfer_service(self, transfer_service: TransferService):
-        """Set the transfer service for database operations"""
-        self.transfer_service = transfer_service
+    def set_transfer_service(self, transfer_service: BigQueryTransferService):
+        """Set the BigQuery transfer service for database operations"""
+        self.bigquery_transfer_service = transfer_service
     
     def is_excluded_token(self, asset: str, contract_address: str = None) -> bool:
         """Check if token should be excluded"""
@@ -51,7 +52,7 @@ class DataProcessor:
     
     async def process_transfers_to_purchases(self, wallets: List[WalletInfo], 
                                            all_transfers: Dict, network: str) -> List[Purchase]:
-        """Process transfers to identify purchases and store all transfers to database"""
+        """Process transfers to identify purchases and store all transfers to BigQuery"""
         purchases = []
         all_transfer_records = []  # Collect all transfers for batch storage
         wallet_scores = {w.address: w.score for w in wallets}
@@ -80,6 +81,23 @@ class DataProcessor:
                     
                     # Calculate ETH cost for this transaction
                     eth_spent = self._calculate_eth_spent(outgoing, tx_hash, block_num)
+                    
+                    # Debug logging for ETH calculation
+                    if eth_spent == 0.0 and asset not in self.EXCLUDED_ASSETS:
+                        logger.debug(f"Zero ETH cost for {asset} transfer - tx: {tx_hash[:10] if tx_hash else 'none'}, "
+                                   f"block: {block_num}, outgoing_count: {len(outgoing)}")
+                        # Log a sample of outgoing transfers for debugging
+                        if len(outgoing) > 0:
+                            sample_outgoing = outgoing[:2]  # First 2 transfers
+                            for i, out_transfer in enumerate(sample_outgoing):
+                                out_asset = out_transfer.get("asset", "unknown")
+                                out_value = out_transfer.get("value", "0")
+                                out_hash = out_transfer.get("hash", "none")
+                                logger.debug(f"  Outgoing {i}: {out_asset}={out_value}, hash={out_hash[:10] if out_hash != 'none' else 'none'}")
+                    
+                    elif eth_spent > 0:
+                        logger.debug(f"Found ETH cost for {asset}: {eth_spent}")
+                    
                     
                     # Create transfer record for ALL incoming ERC20 transfers
                     transfer_record = Transfer(
@@ -157,19 +175,21 @@ class DataProcessor:
                     logger.debug(f"Error processing outgoing transfer: {e}")
                     continue
         
-        # Store all transfers to database
-        if self.transfer_service and all_transfer_records:
+        # Store all transfers to BigQuery
+        if self.bigquery_transfer_service and all_transfer_records:
             try:
-                stored_count = await self.transfer_service.store_transfers_batch(all_transfer_records)
-                logger.info(f"Stored {stored_count} transfer records to database")
+                stored_count = await self.bigquery_transfer_service.store_transfers_batch(all_transfer_records)
+                self._last_stored_count = stored_count
+                logger.info(f"Stored {stored_count} transfer records to BigQuery")
             except Exception as e:
-                logger.error(f"Failed to store transfer records: {e}")
+                logger.error(f"Failed to store transfer records to BigQuery: {e}")
+                self._last_stored_count = 0
         
         return purchases
     
     async def process_transfers_to_sells(self, wallets: List[WalletInfo], 
                                        all_transfers: Dict, network: str) -> List[Purchase]:
-        """Process transfers to identify sells and store all transfers to database"""
+        """Process transfers to identify sells and store all transfers to BigQuery"""
         sells = []
         all_transfer_records = []  # Collect all transfers for batch storage
         wallet_scores = {w.address: w.score for w in wallets}
@@ -281,13 +301,15 @@ class DataProcessor:
                     logger.debug(f"Error processing incoming transfer in sell analysis: {e}")
                     continue
         
-        # Store all transfers to database
-        if self.transfer_service and all_transfer_records:
+        # Store all transfers to BigQuery
+        if self.bigquery_transfer_service and all_transfer_records:
             try:
-                stored_count = await self.transfer_service.store_transfers_batch(all_transfer_records)
-                logger.info(f"Stored {stored_count} transfer records to database")
+                stored_count = await self.bigquery_transfer_service.store_transfers_batch(all_transfer_records)
+                self._last_stored_count = stored_count
+                logger.info(f"Stored {stored_count} transfer records to BigQuery")
             except Exception as e:
-                logger.error(f"Failed to store transfer records: {e}")
+                logger.error(f"Failed to store transfer records to BigQuery: {e}")
+                self._last_stored_count = 0
         
         return sells
     
@@ -299,61 +321,171 @@ class DataProcessor:
     
     def _calculate_eth_spent(self, outgoing_transfers: List[Dict], 
                            target_tx: str, target_block: str) -> float:
-        """Calculate ETH spent in a transaction"""
+        """Calculate ETH spent in a transaction - IMPROVED VERSION"""
         if not target_tx or not outgoing_transfers:
             return 0.0
         
-        # Look for exact transaction match first
+        # Strategy 1: Look for exact transaction match first
+        exact_matches = []
         for transfer in outgoing_transfers:
             if (transfer.get("hash") == target_tx and 
                 transfer.get("asset") == "ETH"):
                 try:
-                    return float(transfer.get("value", "0"))
+                    eth_value = float(transfer.get("value", "0"))
+                    if eth_value > 0:
+                        exact_matches.append(eth_value)
                 except (ValueError, TypeError):
                     continue
         
-        # Fallback to block-based matching
-        matched_values = []
+        if exact_matches:
+            total_exact = sum(exact_matches)
+            logger.debug(f"Found exact ETH match for tx {target_tx[:10]}: {total_exact}")
+            return total_exact
+        
+        # Strategy 2: Look for WETH transfers (common in DEX swaps)
+        weth_addresses = {
+            '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',  # WETH on Ethereum
+            '0x4200000000000000000000000000000000000006'   # WETH on Base
+        }
+        
+        weth_matches = []
         for transfer in outgoing_transfers:
+            contract_address = transfer.get("rawContract", {}).get("address", "").lower()
             if (transfer.get("blockNum") == target_block and 
-                transfer.get("asset") == "ETH"):
+                contract_address in [addr.lower() for addr in weth_addresses]):
+                try:
+                    weth_value = float(transfer.get("value", "0"))
+                    if weth_value > 0:
+                        weth_matches.append(weth_value)
+                        logger.debug(f"Found WETH transfer: {weth_value}")
+                except (ValueError, TypeError):
+                    continue
+        
+        if weth_matches:
+            return sum(weth_matches)
+        
+        # Strategy 3: Improved block-based matching with better filtering
+        block_matches = []
+        eth_transfers_in_block = []
+        
+        for transfer in outgoing_transfers:
+            if transfer.get("blockNum") == target_block:
+                if transfer.get("asset") == "ETH":
+                    eth_transfers_in_block.append(transfer)
+        
+        # If only one ETH transfer in block, likely related
+        if len(eth_transfers_in_block) == 1:
+            try:
+                eth_value = float(eth_transfers_in_block[0].get("value", "0"))
+                if 0.000001 <= eth_value <= 100.0:  # Broader range
+                    logger.debug(f"Single ETH transfer in block: {eth_value}")
+                    return eth_value
+            except (ValueError, TypeError):
+                pass
+        
+        # If multiple ETH transfers, use heuristics
+        elif len(eth_transfers_in_block) > 1:
+            for transfer in eth_transfers_in_block:
                 try:
                     eth_amount = float(transfer.get("value", "0"))
-                    if 0.0001 <= eth_amount <= 50.0:
-                        matched_values.append(eth_amount)
+                    # More permissive range for DEX transactions
+                    if 0.000001 <= eth_amount <= 100.0:
+                        block_matches.append(eth_amount)
                 except (ValueError, TypeError):
                     continue
+            
+            if block_matches:
+                # Take the largest ETH transfer as most likely to be the swap
+                largest_transfer = max(block_matches)
+                logger.debug(f"Multiple ETH transfers, using largest: {largest_transfer}")
+                return largest_transfer
         
-        return sum(matched_values)
+        # Strategy 4: Fallback - estimate based on typical DEX patterns
+        # For very small amounts or dust, provide minimal estimate
+        try:
+            token_amount = float(target_tx) if target_tx.replace('.', '').isdigit() else 0
+            if token_amount > 1000:  # Large token amounts might be low-value tokens
+                estimated_eth = min(token_amount * 0.000001, 0.01)  # Very conservative estimate
+                if estimated_eth > 0:
+                    logger.debug(f"Using fallback estimation: {estimated_eth}")
+                    return estimated_eth
+        except:
+            pass
+        
+        logger.debug(f"No ETH cost found for tx {target_tx[:10] if target_tx else 'none'}, block {target_block}")
+        return 0.0
     
     def _calculate_eth_received(self, incoming_transfers: List[Dict], 
                               target_tx: str, target_block: str) -> float:
-        """Calculate ETH received from a sell"""
+        """Calculate ETH received from a sell - IMPROVED VERSION"""
         if not target_tx or not incoming_transfers:
             return 0.0
         
-        # Look for exact transaction match first
+        # Strategy 1: Look for exact transaction match first
         for transfer in incoming_transfers:
             if (transfer.get("hash") == target_tx and 
                 transfer.get("asset") == "ETH"):
                 try:
-                    return float(transfer.get("value", "0"))
+                    eth_value = float(transfer.get("value", "0"))
+                    if eth_value > 0:
+                        logger.debug(f"Found exact ETH received match: {eth_value}")
+                        return eth_value
                 except (ValueError, TypeError):
                     continue
         
-        # Fallback to block-based matching
-        matched_values = []
+        # Strategy 2: Look for WETH received (DEX sells often involve WETH)
+        weth_addresses = {
+            '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',  # WETH on Ethereum  
+            '0x4200000000000000000000000000000000000006'   # WETH on Base
+        }
+        
+        for transfer in incoming_transfers:
+            contract_address = transfer.get("rawContract", {}).get("address", "").lower()
+            if (transfer.get("blockNum") == target_block and 
+                contract_address in [addr.lower() for addr in weth_addresses]):
+                try:
+                    weth_value = float(transfer.get("value", "0"))
+                    if weth_value > 0:
+                        logger.debug(f"Found WETH received: {weth_value}")
+                        return weth_value
+                except (ValueError, TypeError):
+                    continue
+        
+        # Strategy 3: Block-based matching with improved logic
+        eth_transfers_in_block = []
         for transfer in incoming_transfers:
             if (transfer.get("blockNum") == target_block and 
                 transfer.get("asset") == "ETH"):
+                eth_transfers_in_block.append(transfer)
+        
+        # If single ETH transfer in block, likely the sell proceeds
+        if len(eth_transfers_in_block) == 1:
+            try:
+                eth_value = float(eth_transfers_in_block[0].get("value", "0"))
+                if 0.000001 <= eth_value <= 100.0:  # Broader range
+                    logger.debug(f"Single ETH received in block: {eth_value}")
+                    return eth_value
+            except (ValueError, TypeError):
+                pass
+        
+        # If multiple ETH transfers, take the largest (most likely the sell)
+        elif len(eth_transfers_in_block) > 1:
+            valid_amounts = []
+            for transfer in eth_transfers_in_block:
                 try:
                     eth_amount = float(transfer.get("value", "0"))
-                    if 0.001 <= eth_amount <= 50.0:
-                        matched_values.append(eth_amount)
+                    if 0.000001 <= eth_amount <= 100.0:
+                        valid_amounts.append(eth_amount)
                 except (ValueError, TypeError):
                     continue
+            
+            if valid_amounts:
+                largest = max(valid_amounts)
+                logger.debug(f"Multiple ETH received, using largest: {largest}")
+                return largest
         
-        return sum(matched_values)
+        logger.debug(f"No ETH received found for tx {target_tx[:10] if target_tx else 'none'}, block {target_block}")
+        return 0.0
     
     def analyze_purchases(self, purchases: List[Purchase], analysis_type: str) -> Dict:
         """Analyze purchases using pandas - optimized for cloud functions"""

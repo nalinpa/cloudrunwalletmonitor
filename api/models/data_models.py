@@ -49,16 +49,12 @@ class Transfer:
     transfer_type: TransferType  # buy or sell
     timestamp: datetime
     cost_in_eth: float
-    
-    # Additional fields for comprehensive tracking
     transaction_hash: str
     block_number: int
     token_amount: float
     token_symbol: Optional[str] = None
     network: str = "ethereum"
     platform: Optional[str] = None
-    
-    # Metadata
     created_at: datetime = None
     wallet_sophistication_score: Optional[float] = None
     
@@ -71,9 +67,9 @@ class Transfer:
         data = asdict(self)
         # Convert enum to string
         data['transfer_type'] = self.transfer_type.value
-        # Convert datetime to ISO string
-        data['timestamp'] = self.timestamp.isoformat() if self.timestamp else None
-        data['created_at'] = self.created_at.isoformat() if self.created_at else None
+        # Keep datetime objects as is for MongoDB
+        data['timestamp'] = self.timestamp
+        data['created_at'] = self.created_at
         return data
     
     @classmethod
@@ -83,10 +79,10 @@ class Transfer:
         if isinstance(data.get('transfer_type'), str):
             data['transfer_type'] = TransferType(data['transfer_type'])
         
-        # Convert ISO strings back to datetime
+        # Convert ISO strings to datetime if necessary
         if isinstance(data.get('timestamp'), str):
-            data['timestamp'] = datetime.fromisoformat(data['timestamp'])
+            data['timestamp'] = datetime.fromisoformat(data['timestamp'].rstrip('Z'))
         if isinstance(data.get('created_at'), str):
-            data['created_at'] = datetime.fromisoformat(data['created_at'])
+            data['created_at'] = datetime.fromisoformat(data['created_at'].rstrip('Z'))
         
         return cls(**data)

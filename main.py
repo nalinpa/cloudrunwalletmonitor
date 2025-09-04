@@ -37,27 +37,36 @@ _analyzers = {}
 _initialized = False
 
 def initialize_services():
-    """Initialize services once with better error handling"""
+    """Initialize services once - BigQuery only"""
     global _initialized
     if not _initialized:
-        logger.info("Initializing Cloud Function services...")
+        logger.info("Initializing Cloud Function services (BigQuery only)...")
         
         try:
             # Validate configuration
             config = Config()
-            logger.info(f"Config loaded - BigQuery project: {getattr(config, 'bigquery_project_id', 'Not set')}")
+            logger.info(f"Config loaded - BigQuery project: {config.bigquery_project_id}")
             
             errors = config.validate()
             if errors:
                 logger.warning(f"Configuration warnings: {', '.join(errors)}")
                 # Don't fail on warnings - continue
             
-            # Log Telegram configuration status
-            telegram_configured = bool(os.getenv('TELEGRAM_BOT_TOKEN') and os.getenv('TELEGRAM_CHAT_ID'))
+            # Log Telegram configuration status (if configured)
+            telegram_configured = check_telegram_config()
             if telegram_configured:
-                logger.info("Telegram notifications configured")
+                bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
+                chat_id = os.getenv('TELEGRAM_CHAT_ID')
+                logger.info(f"Telegram configured - Bot: {bot_token[:10]}...{bot_token[-5:] if len(bot_token) > 15 else '****'}, Chat: {chat_id}")
             else:
                 logger.warning("Telegram notifications not configured - alerts will be disabled")
+                logger.warning(f"Bot token present: {bool(os.getenv('TELEGRAM_BOT_TOKEN'))}")
+                logger.warning(f"Chat ID present: {bool(os.getenv('TELEGRAM_CHAT_ID'))}")
+            
+            # Remove MongoDB status logging
+            # logger.info(f"MongoDB configured: {bool(config.mongo_uri)}")
+            logger.info(f"BigQuery configured: {bool(config.bigquery_project_id)}")
+            logger.info(f"Alchemy configured: {bool(config.alchemy_api_key)}")
             
             logger.info("Services initialized successfully")
             _initialized = True
@@ -99,11 +108,27 @@ def check_telegram_config() -> bool:
     """Check if Telegram is properly configured"""
     bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
     chat_id = os.getenv('TELEGRAM_CHAT_ID')
-    return bool(bot_token and chat_id and len(bot_token) > 40)
+    
+    if not bot_token or not chat_id:
+        return False
+    
+    # More thorough validation
+    if len(bot_token) < 40 or ':' not in bot_token:
+        logger.error(f"Invalid bot token format: {bot_token[:10]}...")
+        return False
+    
+    try:
+        int(chat_id)  # Chat ID should be numeric
+    except ValueError:
+        logger.error(f"Invalid chat ID format: {chat_id}")
+        return False
+    
+    return True
 
-async def send_telegram_notification(message: str) -> bool:
-    """Send a basic Telegram notification"""
+async def send_telegram_notification(message: str, parse_mode: str = "Markdown") -> bool:
+    """Send a Telegram notification with improved error handling"""
     if not check_telegram_config():
+        logger.warning("Telegram not configured - skipping notification")
         return False
     
     try:
@@ -115,25 +140,107 @@ async def send_telegram_notification(message: str) -> bool:
         
         payload = {
             "chat_id": chat_id,
-            "text": message[:4000],
-            "parse_mode": "Markdown",
+            "text": message[:4000],  # Telegram limit
+            "parse_mode": parse_mode,
             "disable_web_page_preview": True
         }
         
+        logger.info(f"Sending Telegram notification to chat {chat_id}")
+        
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(url, json=payload)
-            success = response.status_code == 200
+            response = await client.post(
+                url, 
+                json=payload,
+                headers={"Content-Type": "application/json"}
+            )
             
-            if success:
-                logger.info("Telegram notification sent successfully")
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('ok'):
+                    logger.info("Telegram notification sent successfully")
+                    return True
+                else:
+                    logger.error(f"Telegram API error: {data.get('description', 'Unknown error')}")
+                    return False
             else:
-                logger.error(f"Telegram API error: {response.status_code}")
-            
-            return success
+                logger.error(f"Telegram HTTP error: {response.status_code} - {response.text}")
+                return False
             
     except Exception as e:
         logger.error(f"Failed to send Telegram notification: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return False
+
+async def test_telegram_connection() -> Dict[str, Any]:
+    """Test Telegram connection and return detailed status"""
+    if not check_telegram_config():
+        return {
+            "configured": False,
+            "error": "Bot token or chat ID missing",
+            "bot_token_present": bool(os.getenv('TELEGRAM_BOT_TOKEN')),
+            "chat_id_present": bool(os.getenv('TELEGRAM_CHAT_ID'))
+        }
+    
+    try:
+        import httpx
+        
+        bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
+        chat_id = os.getenv('TELEGRAM_CHAT_ID')
+        
+        # Test bot info
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Check bot info
+            bot_response = await client.get(f"https://api.telegram.org/bot{bot_token}/getMe")
+            
+            if bot_response.status_code != 200:
+                return {
+                    "configured": False,
+                    "error": f"Bot API returned {bot_response.status_code}",
+                    "bot_valid": False
+                }
+            
+            bot_data = bot_response.json()
+            if not bot_data.get('ok'):
+                return {
+                    "configured": False,
+                    "error": f"Bot API error: {bot_data.get('description')}",
+                    "bot_valid": False
+                }
+            
+            bot_info = bot_data.get('result', {})
+            
+            # Test chat access
+            chat_response = await client.get(
+                f"https://api.telegram.org/bot{bot_token}/getChat",
+                params={"chat_id": chat_id}
+            )
+            
+            chat_accessible = chat_response.status_code == 200
+            chat_error = None
+            
+            if not chat_accessible:
+                try:
+                    chat_data = chat_response.json()
+                    chat_error = chat_data.get('description', 'Unknown chat error')
+                except:
+                    chat_error = f"HTTP {chat_response.status_code}"
+            
+            return {
+                "configured": True,
+                "bot_valid": True,
+                "bot_username": bot_info.get('username'),
+                "bot_name": bot_info.get('first_name'),
+                "chat_accessible": chat_accessible,
+                "chat_error": chat_error,
+                "ready_for_notifications": chat_accessible
+            }
+            
+    except Exception as e:
+        return {
+            "configured": False,
+            "error": f"Connection test failed: {str(e)}",
+            "exception": True
+        }
 
 async def _run_analysis_with_notifications(request_data: Dict) -> Dict[str, Any]:
     """Run analysis and send notifications with better error handling"""
@@ -147,7 +254,7 @@ async def _run_analysis_with_notifications(request_data: Dict) -> Dict[str, Any]
         debug_mode = request_data.get('debug', False)
         send_notifications = request_data.get('notifications', True)
         
-        logger.info(f"Running analysis: {network} {analysis_type} with {num_wallets} wallets")
+        logger.info(f"Running analysis: {network} {analysis_type} with {num_wallets} wallets, notifications: {send_notifications}")
         
         # Validate network
         if network not in config.supported_networks:
@@ -174,6 +281,12 @@ async def _run_analysis_with_notifications(request_data: Dict) -> Dict[str, Any]
                 "timestamp": datetime.utcnow().isoformat()
             }
         
+        # Test Telegram connection if notifications are enabled
+        telegram_status = None
+        if send_notifications:
+            telegram_status = await test_telegram_connection()
+            logger.info(f"Telegram status: {telegram_status}")
+        
         debug_info = {
             'config_validation': 'passed',
             'requested_params': {
@@ -182,8 +295,10 @@ async def _run_analysis_with_notifications(request_data: Dict) -> Dict[str, Any]
                 'num_wallets': num_wallets,
                 'days_back': days_back
             },
-            'notifications_configured': check_telegram_config(),
-            'notifications_enabled': send_notifications
+            'telegram_status': telegram_status,
+            'notifications_enabled': send_notifications,
+            'bigquery_configured': bool(config.bigquery_project_id),
+            'alchemy_configured': bool(config.alchemy_api_key)
         }
         
         # If debug mode, return early with config info
@@ -196,11 +311,46 @@ async def _run_analysis_with_notifications(request_data: Dict) -> Dict[str, Any]
                 'success': True
             }
         
+        # Send start notification if enabled
+        if send_notifications and telegram_status and telegram_status.get('ready_for_notifications'):
+            start_message = f"""🚀 **ANALYSIS STARTED**
+
+**Network:** {network.upper()}
+**Type:** {analysis_type.capitalize()}
+**Wallets:** {num_wallets}
+**Time Range:** {days_back} days
+
+⏰ {datetime.now().strftime('%H:%M:%S')}"""
+            
+            await send_telegram_notification(start_message)
+        
         # Run normal analysis
         try:
             logger.info(f"Starting {analysis_type} analysis for {network}")
             analyzer = await get_analyzer(network, analysis_type)
             result = await analyzer.analyze(num_wallets, days_back)
+            
+            # Send success notification with results
+            if send_notifications and telegram_status and telegram_status.get('ready_for_notifications'):
+                success_message = f"""✅ **ANALYSIS COMPLETE**
+
+**Network:** {network.upper()}
+**Type:** {analysis_type.capitalize()}
+**Results:**
+• {result.total_transactions} transactions
+• {result.unique_tokens} unique tokens
+• {result.total_eth_value:.4f} ETH total volume
+
+⏰ {datetime.now().strftime('%H:%M:%S')}"""
+
+                # Add top token info if available
+                if result.ranked_tokens:
+                    top_token = result.ranked_tokens[0]
+                    success_message += f"\n\n🏆 **Top Token:** {top_token[0]}"
+                    if len(top_token) > 2:
+                        success_message += f" (Score: {top_token[2]:.1f})"
+                
+                await send_telegram_notification(success_message)
             
             # Convert to dict for JSON serialization
             result_dict = {
@@ -225,7 +375,7 @@ async def _run_analysis_with_notifications(request_data: Dict) -> Dict[str, Any]
             logger.error(f"Analysis traceback: {traceback.format_exc()}")
             
             # Send error notification if configured
-            if send_notifications and check_telegram_config():
+            if send_notifications and telegram_status and telegram_status.get('ready_for_notifications'):
                 try:
                     error_notification = f"❌ **ERROR ({network.upper()})**\n\n"
                     error_notification += f"**Type:** Analysis Error\n"
@@ -255,9 +405,9 @@ async def _run_analysis_with_notifications(request_data: Dict) -> Dict[str, Any]
 
 @functions_framework.http
 def crypto_analysis_function(request: Request):
-    """Cloud Functions HTTP entry point with comprehensive error handling"""
+    """Cloud Functions HTTP entry point - BigQuery only"""
     
-    logger.info("Function invoked")
+    logger.info("Function invoked (BigQuery-only mode)")
     
     # Initialize services on first request
     try:
@@ -294,35 +444,41 @@ def crypto_analysis_function(request: Request):
             debug_param = request.args.get('debug', '').lower() == 'true'
             
             basic_response = {
-                "message": "Crypto Analysis Function with BigQuery Storage",
+                "message": "Crypto Analysis Function - BigQuery Only",
                 "status": "healthy",
-                "version": "3.0.0-bigquery-debug",
+                "version": "4.0.0-bigquery-only",
                 "service": "crypto-analysis-cloud-function",
                 "timestamp": datetime.utcnow().isoformat(),
                 "initialized": _initialized,
-                "telegram_configured": check_telegram_config()
+                "telegram_configured": check_telegram_config(),
+                "database_type": "BigQuery"
             }
             
             if debug_param and _initialized:
                 # Add detailed config info for debugging
                 try:
                     config = Config()
+                    
+                    # Get detailed Telegram status
+                    telegram_status = asyncio.run(test_telegram_connection())
+                    
                     basic_response['debug_info'] = {
-                        'mongo_configured': bool(config.mongo_uri),
+                        'bigquery_configured': bool(config.bigquery_project_id),
                         'alchemy_configured': bool(config.alchemy_api_key),
-                        'bigquery_configured': bool(getattr(config, 'bigquery_project_id', None)),
-                        'bigquery_project': getattr(config, 'bigquery_project_id', 'Not configured'),
-                        'bigquery_location': getattr(config, 'bigquery_location', 'Not configured'),
+                        'bigquery_project': config.bigquery_project_id,
+                        'bigquery_dataset': config.bigquery_dataset_id,
+                        'bigquery_location': config.bigquery_location,
                         'supported_networks': config.supported_networks,
-                        'db_name': config.db_name,
-                        'wallets_collection': config.wallets_collection
+                        'wallets_table': 'smart_wallets',
+                        'transfers_table': config.bigquery_transfers_table,
+                        'telegram_detailed': telegram_status
                     }
                 except Exception as debug_error:
                     basic_response['debug_error'] = str(debug_error)
             
             return (json.dumps(basic_response), 200, headers)
         
-        # Handle POST request (analysis)
+        # Handle POST request for Telegram test
         if request.method == 'POST':
             # Get JSON data
             request_json = request.get_json(silent=True)
@@ -374,5 +530,5 @@ def crypto_analysis_function(request: Request):
 
 # For local testing
 if __name__ == "__main__":
-    logger.info("Starting local test")
+    logger.info("Starting local test - BigQuery only")
     initialize_services()

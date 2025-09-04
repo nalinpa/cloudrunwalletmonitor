@@ -1,3 +1,5 @@
+# utils/config.py - Updated to remove MongoDB dependencies
+
 import os
 from typing import List
 import logging 
@@ -5,25 +7,22 @@ import logging
 logger = logging.getLogger(__name__)
 
 class Config:
-    """Configuration management for Cloud Function - Updated for BigQuery storage"""
+    """Configuration management for Cloud Function - BigQuery only, no MongoDB"""
     
     def __init__(self):
-        # MongoDB configuration (still used for wallet data)
-        self.mongo_uri = os.getenv('MONGO_URI')
-        self.db_name = os.getenv('DB_NAME', 'crypto_tracker')
-        self.wallets_collection = os.getenv('WALLETS_COLLECTION', 'smart_wallets')
         
-        # BigQuery configuration (for transfer data storage)
-        # Can be different from the current project - useful for shared datasets
+        # BigQuery configuration (for both wallets and transfers)
         self.bigquery_project_id = os.getenv('BIGQUERY_PROJECT_ID', 'crypto-tracker-cloudrun')
         self.bigquery_dataset_id = os.getenv('BIGQUERY_DATASET_ID', 'crypto_analysis')
         self.bigquery_transfers_table = os.getenv('BIGQUERY_TRANSFERS_TABLE', 'transfers')
+        self.bigquery_wallets_table = os.getenv('BIGQUERY_WALLETS_TABLE', 'smart_wallets')
         self.bigquery_location = os.getenv('BIGQUERY_LOCATION', 'asia-southeast1')
         
-        # Current Cloud Function project (for other GCP services)
+        # Current Cloud Function project
         self.cloud_function_project = os.getenv('GOOGLE_CLOUD_PROJECT')
         
         logger.info(f"BigQuery project: {self.bigquery_project_id}")
+        logger.info(f"BigQuery dataset: {self.bigquery_dataset_id}")
         logger.info(f"BigQuery location: {self.bigquery_location}")
         logger.info(f"Cloud Function project: {self.cloud_function_project}")
         
@@ -65,17 +64,13 @@ class Config:
         """Validate configuration and return any errors"""
         errors = []
         
-        # MongoDB validation (for wallet data)
-        if not self.mongo_uri:
-            errors.append("MONGO_URI not configured")
-        
         # Alchemy API validation
         if not self.alchemy_api_key:
             errors.append("ALCHEMY_API_KEY not configured")
         
         # BigQuery validation
         if not self.bigquery_project_id:
-            errors.append("BIGQUERY_PROJECT_ID not configured (set BIGQUERY_PROJECT_ID or GOOGLE_CLOUD_PROJECT)")
+            errors.append("BIGQUERY_PROJECT_ID not configured")
         
         # Optional BigQuery validations with warnings
         if not self.bigquery_dataset_id:

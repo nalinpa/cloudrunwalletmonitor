@@ -7,21 +7,27 @@ from api.models.data_models import AnalysisResult, WalletInfo, Purchase
 from services.database.data_processor import DataProcessor
 
 class CloudSellAnalyzer(BaseAnalyzer):
-    """Cloud-optimized Sell analyzer"""
+    """Cloud-optimized Sell analyzer with BigQuery transfer storage"""
     
     def __init__(self, network: str):
         super().__init__(network)
         self.data_processor = DataProcessor()
+    
+    async def initialize(self):
+        """Initialize services and set BigQuery transfer service in data processor"""
+        await super().initialize()
+        # Connect the data processor to the BigQuery transfer service
+        self.data_processor.set_transfer_service(self.bigquery_transfer_service)
     
     def _get_analysis_type(self) -> str:
         return "sell"
     
     async def _process_data(self, wallets: List[WalletInfo], 
                           all_transfers: Dict) -> AnalysisResult:
-        """Process transfers to identify sell transactions"""
+        """Process transfers to identify sell transactions and store all transfers to BigQuery"""
         
-        # Convert transfers to sells
-        sells = self.data_processor.process_transfers_to_sells(
+        # Convert transfers to sells - this will now also store all transfers to BigQuery
+        sells = await self.data_processor.process_transfers_to_sells(
             wallets, all_transfers, self.network
         )
         
@@ -30,6 +36,9 @@ class CloudSellAnalyzer(BaseAnalyzer):
         
         # Analyze sells using pandas
         analysis_results = self.data_processor.analyze_purchases(sells, "sell")
+        
+        # Update stats with BigQuery transfer storage info
+        self.stats["transfers_stored"] = getattr(self.data_processor, '_last_stored_count', 0)
         
         # Create result
         return self._create_result(analysis_results, sells)

@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import logging
 from typing import List, Dict
-from datetime import datetime
+from datetime import datetime, timedelta
 from api.models.data_models import WalletInfo, Purchase, Transfer, TransferType
 from services.database.bigquery_client import BigQueryTransferService
 
@@ -64,6 +64,12 @@ class DataProcessor:
             incoming = transfers.get('incoming', [])
             outgoing = transfers.get('outgoing', [])
             
+            # Debug log to see what currencies are available
+            all_assets = set()
+            for transfer in incoming + outgoing:
+                all_assets.add(transfer.get("asset"))
+            logger.debug(f"Wallet {address} has transfers in: {all_assets}")
+            
             # Process incoming transfers (potential buys)
             for transfer in incoming:
                 try:
@@ -79,15 +85,24 @@ class DataProcessor:
                     if not asset or asset == "ETH" or amount <= 0:
                         continue
                     
-                    # Calculate ETH cost for this transaction
+                    # Calculate ETH cost using multiple currencies
                     eth_spent = self._calculate_eth_spent(outgoing, tx_hash, block_num)
+                    
+                    # Debug log to see what we're finding
+                    if eth_spent > 0:
+                        logger.debug(f"Found ETH cost {eth_spent} for token {asset} in tx {tx_hash}")
+                    else:
+                        # Check what spending currencies are available
+                        spending_breakdown = self._get_spending_breakdown(outgoing, tx_hash, block_num)
+                        if spending_breakdown:
+                            logger.warning(f"No ETH cost calculated but found spending: {spending_breakdown} for tx {tx_hash}")
                     
                     # Create transfer record for ALL incoming ERC20 transfers
                     transfer_record = Transfer(
                         wallet_address=address,
                         token_address=contract_address,
                         transfer_type=TransferType.BUY,
-                        timestamp=self._parse_timestamp(transfer),
+                        timestamp=self._parse_timestamp(transfer, block_number),
                         cost_in_eth=eth_spent,
                         transaction_hash=tx_hash,
                         block_number=block_number,
@@ -142,8 +157,8 @@ class DataProcessor:
                         wallet_address=address,
                         token_address=contract_address,
                         transfer_type=TransferType.SELL,
-                        timestamp=self._parse_timestamp(transfer),
-                        cost_in_eth=eth_received if eth_received > 0 else min(amount * 0.00001, 1.0),  # Estimate if no ETH received
+                        timestamp=self._parse_timestamp(transfer, block_number),
+                        cost_in_eth=eth_received if eth_received > 0 else 0.0,  # Don't use arbitrary estimates
                         transaction_hash=tx_hash,
                         block_number=block_number,
                         token_amount=amount,
@@ -201,15 +216,13 @@ class DataProcessor:
                     
                     # Calculate ETH received from sell
                     eth_received = self._calculate_eth_received(incoming, tx_hash, block_num)
-                    if eth_received < 0.001:
-                        eth_received = min(amount_sold * 0.00001, 1.0)  # Estimate
                     
                     # Create transfer record for ALL outgoing ERC20 transfers
                     transfer_record = Transfer(
                         wallet_address=address,
                         token_address=contract_address,
                         transfer_type=TransferType.SELL,
-                        timestamp=self._parse_timestamp(transfer),
+                        timestamp=self._parse_timestamp(transfer, block_number),
                         cost_in_eth=eth_received,
                         transaction_hash=tx_hash,
                         block_number=block_number,
@@ -268,7 +281,7 @@ class DataProcessor:
                         wallet_address=address,
                         token_address=contract_address,
                         transfer_type=TransferType.BUY,
-                        timestamp=self._parse_timestamp(transfer),
+                        timestamp=self._parse_timestamp(transfer, block_number),
                         cost_in_eth=eth_spent,
                         transaction_hash=tx_hash,
                         block_number=block_number,
@@ -296,69 +309,174 @@ class DataProcessor:
         
         return sells
     
-    def _parse_timestamp(self, transfer: Dict) -> datetime:
-        """Parse timestamp from transfer data"""
-        # Most Alchemy responses don't include timestamp in the transfer object
-        # For now, use current time - in production you might want to fetch block timestamps
+    def _parse_timestamp(self, transfer: Dict, block_number: int = None) -> datetime:
+        """Parse timestamp from transfer data or estimate from block"""
+        # Try to get timestamp from transfer metadata
+        if 'metadata' in transfer and 'blockTimestamp' in transfer['metadata']:
+            try:
+                return datetime.fromisoformat(transfer['metadata']['blockTimestamp'].replace('Z', '+00:00'))
+            except:
+                pass
+        
+        # Fallback: estimate based on block number (very rough)
+        if block_number and block_number > 0:
+            try:
+                # Rough estimate: ~12 second blocks for ETH, ~2 seconds for Base
+                # Adjust based on your network
+                block_time = 2 if 'base' in str(transfer.get('network', '')).lower() else 12
+                current_block = 35093118  # Update this to current block
+                seconds_ago = (current_block - block_number) * block_time
+                return datetime.utcnow() - timedelta(seconds=seconds_ago)
+            except:
+                pass
+        
+        # Final fallback
         return datetime.utcnow()
     
     def _calculate_eth_spent(self, outgoing_transfers: List[Dict], 
                            target_tx: str, target_block: str) -> float:
-        """Calculate ETH spent in a transaction"""
+        """Calculate ETH equivalent spent in a transaction - checks multiple currencies"""
         if not target_tx or not outgoing_transfers:
             return 0.0
         
+        # Define spending currencies with their ETH conversion rates
+        SPENDING_CURRENCIES = {
+            'ETH': 1.0,
+            'WETH': 1.0,
+            'USDT': 1/2400,  # Update based on current ETH price
+            'USDC': 1/2400,  # Update based on current ETH price  
+            'AERO': 1/4800,  # Adjust based on current AERO/ETH rate
+        }
+        
+        total_eth_equivalent = 0.0
+        
         # Look for exact transaction match first
         for transfer in outgoing_transfers:
-            if (transfer.get("hash") == target_tx and 
-                transfer.get("asset") == "ETH"):
-                try:
-                    return float(transfer.get("value", "0"))
-                except (ValueError, TypeError):
-                    continue
+            if transfer.get("hash") == target_tx:
+                asset = transfer.get("asset", "")
+                if asset in SPENDING_CURRENCIES:
+                    try:
+                        amount = float(transfer.get("value", "0"))
+                        eth_equivalent = amount * SPENDING_CURRENCIES[asset]
+                        total_eth_equivalent += eth_equivalent
+                        # Log what we found for debugging
+                        if eth_equivalent > 0:
+                            logger.debug(f"Found {asset} spend: {amount} = {eth_equivalent} ETH in tx {target_tx}")
+                    except (ValueError, TypeError):
+                        continue
+        
+        # If we found spending in the exact transaction, return it
+        if total_eth_equivalent > 0:
+            return total_eth_equivalent
         
         # Fallback to block-based matching
         matched_values = []
         for transfer in outgoing_transfers:
-            if (transfer.get("blockNum") == target_block and 
-                transfer.get("asset") == "ETH"):
-                try:
-                    eth_amount = float(transfer.get("value", "0"))
-                    if 0.0001 <= eth_amount <= 50.0:
-                        matched_values.append(eth_amount)
-                except (ValueError, TypeError):
-                    continue
+            if transfer.get("blockNum") == target_block:
+                asset = transfer.get("asset", "")
+                if asset in SPENDING_CURRENCIES:
+                    try:
+                        amount = float(transfer.get("value", "0"))
+                        eth_equivalent = amount * SPENDING_CURRENCIES[asset]
+                        
+                        # Reasonable spending range check
+                        if 0.0001 <= eth_equivalent <= 50.0:
+                            matched_values.append(eth_equivalent)
+                            logger.debug(f"Block match - {asset}: {amount} = {eth_equivalent} ETH")
+                    except (ValueError, TypeError):
+                        continue
         
         return sum(matched_values)
-    
+
     def _calculate_eth_received(self, incoming_transfers: List[Dict], 
                               target_tx: str, target_block: str) -> float:
-        """Calculate ETH received from a sell"""
+        """Calculate ETH equivalent received from a sell - checks multiple currencies"""
         if not target_tx or not incoming_transfers:
             return 0.0
         
+        # Define receiving currencies with their ETH conversion rates
+        RECEIVING_CURRENCIES = {
+            'ETH': 1.0,
+            'WETH': 1.0,
+            'USDT': 1/2400,  # Update based on current ETH price
+            'USDC': 1/2400,  # Update based on current ETH price
+            'AERO': 1/4800,  # Adjust based on current AERO/ETH rate
+        }
+        
+        total_eth_equivalent = 0.0
+        
         # Look for exact transaction match first
         for transfer in incoming_transfers:
-            if (transfer.get("hash") == target_tx and 
-                transfer.get("asset") == "ETH"):
-                try:
-                    return float(transfer.get("value", "0"))
-                except (ValueError, TypeError):
-                    continue
+            if transfer.get("hash") == target_tx:
+                asset = transfer.get("asset", "")
+                if asset in RECEIVING_CURRENCIES:
+                    try:
+                        amount = float(transfer.get("value", "0"))
+                        eth_equivalent = amount * RECEIVING_CURRENCIES[asset]
+                        total_eth_equivalent += eth_equivalent
+                        # Log what we found for debugging
+                        if eth_equivalent > 0:
+                            logger.debug(f"Received {asset}: {amount} = {eth_equivalent} ETH in tx {target_tx}")
+                    except (ValueError, TypeError):
+                        continue
+        
+        # If we found receiving in the exact transaction, return it
+        if total_eth_equivalent > 0:
+            return total_eth_equivalent
         
         # Fallback to block-based matching
         matched_values = []
         for transfer in incoming_transfers:
-            if (transfer.get("blockNum") == target_block and 
-                transfer.get("asset") == "ETH"):
-                try:
-                    eth_amount = float(transfer.get("value", "0"))
-                    if 0.001 <= eth_amount <= 50.0:
-                        matched_values.append(eth_amount)
-                except (ValueError, TypeError):
-                    continue
+            if transfer.get("blockNum") == target_block:
+                asset = transfer.get("asset", "")
+                if asset in RECEIVING_CURRENCIES:
+                    try:
+                        amount = float(transfer.get("value", "0"))
+                        eth_equivalent = amount * RECEIVING_CURRENCIES[asset]
+                        
+                        # Reasonable receiving range check
+                        if 0.001 <= eth_equivalent <= 50.0:
+                            matched_values.append(eth_equivalent)
+                            logger.debug(f"Block match received - {asset}: {amount} = {eth_equivalent} ETH")
+                    except (ValueError, TypeError):
+                        continue
         
         return sum(matched_values)
+
+    def _get_spending_breakdown(self, outgoing_transfers: List[Dict], 
+                              target_tx: str, target_block: str) -> Dict:
+        """Get detailed breakdown of what was spent in a transaction"""
+        if not target_tx or not outgoing_transfers:
+            return {}
+        
+        spending_breakdown = {}
+        
+        # Check exact transaction first
+        for transfer in outgoing_transfers:
+            if transfer.get("hash") == target_tx:
+                asset = transfer.get("asset", "")
+                if asset in ['ETH', 'WETH', 'USDT', 'USDC', 'AERO']:
+                    try:
+                        amount = float(transfer.get("value", "0"))
+                        if amount > 0:
+                            spending_breakdown[asset] = spending_breakdown.get(asset, 0) + amount
+                    except (ValueError, TypeError):
+                        continue
+        
+        # If no exact match, try block matching
+        if not spending_breakdown:
+            for transfer in outgoing_transfers:
+                if transfer.get("blockNum") == target_block:
+                    asset = transfer.get("asset", "")
+                    if asset in ['ETH', 'WETH', 'USDT', 'USDC', 'AERO']:
+                        try:
+                            amount = float(transfer.get("value", "0"))
+                            if amount > 0:
+                                spending_breakdown[asset] = spending_breakdown.get(asset, 0) + amount
+                        except (ValueError, TypeError):
+                            continue
+        
+        return spending_breakdown
     
     def analyze_purchases(self, purchases: List[Purchase], analysis_type: str) -> Dict:
         """Analyze purchases using pandas - optimized for cloud functions"""

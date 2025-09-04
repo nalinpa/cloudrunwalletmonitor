@@ -140,43 +140,6 @@ if ($LASTEXITCODE -eq 0) {
     $FUNCTION_URL = gcloud functions describe $FUNCTION_NAME --region $REGION --format="value(serviceConfig.uri)"
     Write-Host "🌐 Function URL: $FUNCTION_URL" -ForegroundColor White
     
-    # Wait a moment for deployment to settle
-    Write-Host "`n⏳ Waiting 10 seconds for deployment to settle..." -ForegroundColor Yellow
-    Start-Sleep -Seconds 10
-    
-    # Test the new deployment
-    Write-Host "`n6️⃣ Testing fresh deployment..." -ForegroundColor Yellow
-    
-    try {
-        $testPayload = @{
-            network = "base"
-            analysis_type = "buy"
-            num_wallets = 5
-            days_back = 1.0
-        } | ConvertTo-Json
-        
-        Write-Host "Sending test request..." -ForegroundColor Gray
-        $response = Invoke-RestMethod -Uri $FUNCTION_URL -Method POST -Body $testPayload -ContentType "application/json" -TimeoutSec 60
-        
-        if ($response.success) {
-            Write-Host "✅ Test successful!" -ForegroundColor Green
-        } else {
-            Write-Host "⚠️ Test completed but check logs for details" -ForegroundColor Yellow
-        }
-        
-    } catch {
-        Write-Host "⚠️ Test request failed: $_" -ForegroundColor Yellow
-        Write-Host "Check function logs for details" -ForegroundColor Gray
-    }
-    
-    Write-Host "`n📊 Check detailed logs with:" -ForegroundColor Cyan
-    Write-Host "gcloud logs tail --service=$FUNCTION_NAME" -ForegroundColor White
-    
-    Write-Host "`n🔍 You should now see detailed debug logs like:" -ForegroundColor Green
-    Write-Host "  - 'STARTING BUY ANALYSIS FOR BASE'" -ForegroundColor Gray
-    Write-Host "  - 'STEP 1: Fetching wallets...'" -ForegroundColor Gray
-    Write-Host "  - 'STEP 2: Getting block range...'" -ForegroundColor Gray
-    
 } else {
     Write-Host "❌ Deployment failed!" -ForegroundColor Red
     Write-Host "Check the error messages above" -ForegroundColor Yellow

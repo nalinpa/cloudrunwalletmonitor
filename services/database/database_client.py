@@ -9,7 +9,7 @@ import concurrent.futures
 logger = logging.getLogger(__name__)
 
 class DatabaseService:
-    """BigQuery-only database service - replaces MongoDB completely"""
+    """BigQuery-only database service - FIXED parameter naming"""
     
     def __init__(self, config: Config):
         self.config = config
@@ -47,8 +47,10 @@ class DatabaseService:
         try:
             query = f"SELECT COUNT(*) as count FROM `{self.full_table_id}` LIMIT 1"
             query_job = self.client.query(query)
-            list(query_job.result())
-            logger.info(f"Successfully connected to table: {self.full_table_id}")
+            results = list(query_job.result())
+            if results:
+                count = results[0].count
+                logger.info(f"Successfully connected to table: {self.full_table_id} ({count} rows)")
         except Exception as e:
             logger.error(f"Failed to connect to table {self.full_table_id}: {e}")
             raise
@@ -74,9 +76,9 @@ class DatabaseService:
             return []
     
     def _sync_get_top_wallets(self, network: str, limit: int) -> List[WalletInfo]:
-        """Synchronously get top wallets from BigQuery"""
+        """Synchronously get top wallets - FIXED parameter naming"""
         try:
-            # Query your table: address (STRING), score (INTEGER), is_active (BOOLEAN)
+            # CRITICAL FIX: Use row_limit instead of limit to avoid BigQuery keyword conflicts
             query = f"""
             SELECT 
                 address,
@@ -89,16 +91,19 @@ class DatabaseService:
               AND score > 0
               AND COALESCE(is_active, TRUE) = TRUE
             ORDER BY score DESC
-            LIMIT @limit
+            LIMIT @row_limit
             """
             
+            # FIXED: Use row_limit instead of limit
             job_config = bigquery.QueryJobConfig(
                 query_parameters=[
-                    bigquery.ScalarQueryParameter("limit", "INT64", limit)
+                    bigquery.ScalarQueryParameter("row_limit", "INT64", limit)
                 ]
             )
             
             logger.info(f"Fetching top {limit} wallets for network: {network}")
+            logger.info(f"Using table: {self.full_table_id}")
+            
             query_job = self.client.query(query, job_config=job_config)
             results = query_job.result()
             
@@ -107,23 +112,17 @@ class DatabaseService:
                 wallet = WalletInfo(
                     address=row.address,
                     score=float(row.score) if row.score else 0.0,
-                    network=network  # Assign network from request
+                    network=network
                 )
                 wallets.append(wallet)
 
             logger.info(f"DB: Retrieved {len(wallets)} wallets from BigQuery")
-
-            if len(wallets) == 0:
-                logger.warning("No wallets found in smart_wallets table")
-                logger.info("Check that your table has:")
-                logger.info("- Valid hex addresses (0x...)")
-                logger.info("- Scores > 0")
-                logger.info("- is_active = TRUE")
             
             return wallets
             
         except Exception as e:
             logger.error(f"Sync get top wallets failed: {e}")
+            logger.error(f"Query was being executed against: {self.full_table_id}")
             return []
     
     async def test_connection(self) -> bool:
@@ -146,12 +145,10 @@ class DatabaseService:
     def _sync_test_connection(self) -> bool:
         """Synchronous connection test"""
         try:
-            # Simple query test
             query = f"SELECT COUNT(*) as count FROM `{self.full_table_id}` LIMIT 1"
             query_job = self.client.query(query)
             results = list(query_job.result())
             return len(results) > 0
-            
         except Exception as e:
             logger.error(f"Connection test query failed: {e}")
             return False

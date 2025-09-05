@@ -1,4 +1,4 @@
-﻿# core/analysis/buy_analyzer.py - Enhanced with detailed logging
+﻿# core/analysis/buy_analyzer.py - Enhanced with detailed logging and debug mode
 
 import pandas as pd
 import numpy as np
@@ -18,7 +18,7 @@ from utils.config import Config
 logger = logging.getLogger(__name__)
 
 class CloudBuyAnalyzer:
-    """Cloud-optimized Buy analyzer with detailed debug logging"""
+    """Cloud-optimized Buy analyzer with extensive debug logging for ETH calculation issues"""
     
     def __init__(self, network: str):
         self.network = network
@@ -29,7 +29,7 @@ class CloudBuyAnalyzer:
         self.bigquery_transfer_service = BigQueryTransferService(self.config)
         self.alchemy_service = AlchemyService(self.config)
         
-        # Data processor
+        # Data processor with debug logging
         self.data_processor = DataProcessor()
         
         self._initialized = False
@@ -40,7 +40,9 @@ class CloudBuyAnalyzer:
             "wallets_processed": 0,
             "transfers_processed": 0,
             "transfers_stored": 0,
-            "memory_used_mb": 0.0
+            "memory_used_mb": 0.0,
+            "zero_eth_count": 0,
+            "non_zero_eth_count": 0
         }
         
         logger.info(f"CloudBuyAnalyzer created for network: {network}")
@@ -77,13 +79,14 @@ class CloudBuyAnalyzer:
             raise
     
     async def analyze(self, num_wallets: int, days_back: float) -> AnalysisResult:
-        """Main analysis method with detailed step logging"""
+        """Main analysis method with detailed step logging and ETH calculation debugging"""
         start_time = time.time()
         
         try:
             logger.info("=" * 60)
-            logger.info(f"STARTING BUY ANALYSIS FOR {self.network.upper()}")
+            logger.info(f" STARTING BUY ANALYSIS FOR {self.network.upper()}")
             logger.info(f"Parameters: {num_wallets} wallets, {days_back} days back")
+            logger.info(f"LOWERED THRESHOLDS FOR TESTING: 0.00001 ETH minimum")
             logger.info("=" * 60)
             
             # Step 1: Ensure initialization
@@ -164,8 +167,9 @@ class CloudBuyAnalyzer:
             
             self.stats["transfers_processed"] = total_transfers
             
-            # Step 5: Process transfers to purchases
-            logger.info("STEP 4: Processing transfers to purchases...")
+            # Step 5: Process transfers to purchases with DEBUG MODE
+            logger.info("STEP 4: Processing transfers to purchases with EXTENSIVE DEBUG...")
+            logger.info("⚠️  DEBUG MODE ACTIVE - Expect verbose logging for ETH calculation issues")
             step_start = time.time()
             
             purchases = await self.data_processor.process_transfers_to_purchases(
@@ -176,12 +180,41 @@ class CloudBuyAnalyzer:
             logger.info(f"✓ Transfer processing complete in {process_time:.2f}s")
             logger.info(f"Found {len(purchases) if purchases else 0} purchase transactions")
             
+            # Debug analysis of ETH calculation results
+            if purchases:
+                zero_eth = sum(1 for p in purchases if p.eth_spent == 0.0)
+                non_zero_eth = len(purchases) - zero_eth
+                total_eth = sum(p.eth_spent for p in purchases)
+                
+                logger.info("=== ETH CALCULATION RESULTS ===")
+                logger.info(f"Purchases with 0.0 ETH: {zero_eth}")
+                logger.info(f"Purchases with >0.0 ETH: {non_zero_eth}")
+                logger.info(f"Total ETH spent: {total_eth:.6f}")
+                
+                if non_zero_eth > 0:
+                    avg_eth = total_eth / non_zero_eth
+                    logger.info(f"Average ETH per non-zero purchase: {avg_eth:.6f}")
+                
+                # Show top non-zero purchases
+                non_zero_purchases = [p for p in purchases if p.eth_spent > 0]
+                if non_zero_purchases:
+                    non_zero_purchases.sort(key=lambda x: x.eth_spent, reverse=True)
+                    logger.info("Top 5 non-zero ETH purchases:")
+                    for i, p in enumerate(non_zero_purchases[:5]):
+                        logger.info(f"  {i+1}. {p.token_bought}: {p.eth_spent:.6f} ETH")
+                
+                self.stats["zero_eth_count"] = zero_eth
+                self.stats["non_zero_eth_count"] = non_zero_eth
+                logger.info("=== END ETH CALCULATION RESULTS ===")
+            
             if not purchases:
                 logger.error("FATAL: No purchases found after processing transfers")
                 logger.error("This could mean:")
                 logger.error("  - No incoming ERC20 transfers found")
                 logger.error("  - All tokens were excluded (stablecoins, etc.)")
-                logger.error("  - ETH amounts too small (< 0.0005)")
+                logger.error("  - ETH amounts too small (< 0.00001) - THRESHOLD LOWERED FOR TESTING")
+                logger.error("  - ETH calculation logic is completely broken")
+                logger.warning("Check the detailed debug logs above for ETH calculation issues")
                 return self._empty_result()
             
             # Log purchase details
@@ -224,15 +257,17 @@ class CloudBuyAnalyzer:
             logger.info("STEP 6: Creating final result...")
             result = self._create_result(analysis_results, purchases)
             
-            # Final summary
+            # Final summary with debug info
             logger.info("=" * 60)
-            logger.info("BUY ANALYSIS COMPLETE!")
+            logger.info("DEBUG BUY ANALYSIS COMPLETE!")
             logger.info(f"Total time: {self.stats['analysis_time']:.2f}s")
             logger.info(f"Transactions: {result.total_transactions}")
             logger.info(f"Unique tokens: {result.unique_tokens}")
             logger.info(f"Total ETH value: {result.total_eth_value:.4f}")
             logger.info(f"Transfers stored to BigQuery: {self.stats['transfers_stored']}")
             logger.info(f"Top tokens: {len(result.ranked_tokens)}")
+            logger.info(f"Zero ETH purchases: {self.stats['zero_eth_count']}")
+            logger.info(f"Non-zero ETH purchases: {self.stats['non_zero_eth_count']}")
             logger.info("=" * 60)
             
             return result
@@ -240,7 +275,7 @@ class CloudBuyAnalyzer:
         except Exception as e:
             self.stats["analysis_time"] = time.time() - start_time
             logger.error("=" * 60)
-            logger.error("BUY ANALYSIS FAILED!")
+            logger.error("DEBUG BUY ANALYSIS FAILED!")
             logger.error(f"Error: {e}")
             logger.error(f"Time elapsed: {self.stats['analysis_time']:.2f}s")
             import traceback
@@ -288,7 +323,7 @@ class CloudBuyAnalyzer:
                     }
                     
                     ranked_tokens.append((token, token_data, score_data['total_score']))
-                    logger.info(f"Added token: {token} (score: {score_data['total_score']:.1f})")
+                    logger.debug(f"Added token: {token} (score: {score_data['total_score']:.1f})")
         
         # Sort by score
         ranked_tokens.sort(key=lambda x: x[2], reverse=True)

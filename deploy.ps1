@@ -17,24 +17,6 @@ try {
     Write-Host "⚠️ Function might not exist or already deleted" -ForegroundColor Yellow
 }
 
-# Step 2: Verify files are updated
-Write-Host "`n2️⃣ Verifying files..." -ForegroundColor Yellow
-
-$buyAnalyzerPath = "core\analysis\buy_analyzer.py"
-if (Test-Path $buyAnalyzerPath) {
-    $content = Get-Content $buyAnalyzerPath -Raw
-    if ($content -match "STARTING BUY ANALYSIS") {
-        Write-Host "✅ buy_analyzer.py has debug logging" -ForegroundColor Green
-    } else {
-        Write-Host "❌ buy_analyzer.py still has old code!" -ForegroundColor Red
-        Write-Host "Replace core/analysis/buy_analyzer.py with the debug version" -ForegroundColor Yellow
-        exit 1
-    }
-} else {
-    Write-Host "❌ buy_analyzer.py not found!" -ForegroundColor Red
-    exit 1
-}
-
 # Step 3: Clean any cached builds
 Write-Host "`n3️⃣ Cleaning cache..." -ForegroundColor Yellow
 if (Test-Path ".gcloudignore") {

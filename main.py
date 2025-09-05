@@ -172,7 +172,7 @@ async def send_telegram_notification(message: str, parse_mode: str = "Markdown")
 async def send_individual_token_notifications(result, network: str, 
                                              max_tokens: int = 7, 
                                              min_alpha_score: float = 50.0) -> bool:
-    """Send individual Telegram notifications with DexScreener, Uniswap & X links"""
+    """Enhanced notifications with AI data, Web3 metrics, and useful links"""
     if not check_telegram_config():
         logger.warning("Telegram not configured - skipping individual notifications")
         return False
@@ -218,6 +218,118 @@ async def send_individual_token_notifications(result, network: str,
         
         return links
     
+    def format_ai_quality_emoji(score: float, confidence: float, ai_enhanced: bool) -> str:
+        """Enhanced quality emoji with AI indicators"""
+        if not ai_enhanced:
+            return "⭐" if score >= 50 else "🔘"
+        
+        # AI-enhanced emojis with confidence consideration
+        if score >= 80 and confidence >= 0.8:
+            return "🔥🔥🔥🤖"  # Premium AI
+        elif score >= 70 and confidence >= 0.7:
+            return "🔥🔥🤖"    # High Quality AI
+        elif score >= 60:
+            return "🔥🤖"      # Good AI
+        else:
+            return "⭐🤖"      # AI Basic
+    
+    def format_web3_insights(web3_data: Dict) -> str:
+        """Format Web3 insights for notification"""
+        insights = []
+        
+        if web3_data.get('token_age_hours'):
+            age_hours = web3_data['token_age_hours']
+            if age_hours < 1:
+                insights.append(f"🆕 **Age:** {age_hours*60:.0f}min (VERY NEW!)")
+            elif age_hours < 24:
+                insights.append(f"🆕 **Age:** {age_hours:.1f}h (New!)")
+            elif age_hours < 168:  # 1 week
+                insights.append(f"🆕 **Age:** {age_hours/24:.1f}d")
+            elif age_hours < 720:  # 1 month
+                insights.append(f"📅 **Age:** {age_hours/24/7:.1f}w")
+        
+        if web3_data.get('liquidity_eth'):
+            liquidity = web3_data['liquidity_eth']
+            if liquidity >= 50:
+                insights.append(f"💧 **Liquidity:** {liquidity:.0f} ETH (Strong)")
+            elif liquidity >= 10:
+                insights.append(f"💧 **Liquidity:** {liquidity:.1f} ETH (Good)")
+            elif liquidity >= 1:
+                insights.append(f"💧 **Liquidity:** {liquidity:.1f} ETH (Low)")
+            else:
+                insights.append(f"💧 **Liquidity:** {liquidity:.2f} ETH (Very Low)")
+        
+        if web3_data.get('smart_money_percentage'):
+            smart_pct = web3_data['smart_money_percentage'] * 100
+            if smart_pct >= 80:
+                insights.append(f"🧠 **Smart Money:** {smart_pct:.0f}% (HIGH)")
+            elif smart_pct >= 60:
+                insights.append(f"🧠 **Smart Money:** {smart_pct:.0f}% (Good)")
+            elif smart_pct >= 40:
+                insights.append(f"🧠 **Smart Money:** {smart_pct:.0f}%")
+        
+        if web3_data.get('price_change_24h'):
+            price_change = web3_data['price_change_24h']
+            if price_change > 20:
+                insights.append(f"📈 **24h:** +{price_change:.1f}% (PUMPING)")
+            elif price_change > 5:
+                insights.append(f"📈 **24h:** +{price_change:.1f}%")
+            elif price_change < -20:
+                insights.append(f"📉 **24h:** {price_change:.1f}% (DUMPING)")
+            elif price_change < -5:
+                insights.append(f"📉 **24h:** {price_change:.1f}%")
+        
+        if web3_data.get('holder_count'):
+            holders = web3_data['holder_count']
+            if holders >= 1000:
+                insights.append(f"👥 **Holders:** {holders:,} (Distributed)")
+            elif holders >= 100:
+                insights.append(f"👥 **Holders:** {holders} (Good)")
+            elif holders >= 10:
+                insights.append(f"👥 **Holders:** {holders} (Low)")
+        
+        if web3_data.get('whale_activity'):
+            whale_activity = web3_data['whale_activity']
+            if whale_activity >= 0.8:
+                insights.append(f"🐋 **Whale Activity:** HIGH")
+            elif whale_activity >= 0.5:
+                insights.append(f"🐋 **Whale Activity:** Moderate")
+        
+        return "\n".join(insights)
+    
+    def format_risk_warnings(risk_factors: Dict, ai_scores: Dict) -> str:
+        """Format risk warnings"""
+        warnings = []
+        
+        # Age-based risks
+        age_risk = risk_factors.get('age_risk')
+        if age_risk == 'high':
+            warnings.append("⚠️ **Very new token - high risk**")
+        
+        # Liquidity risks
+        liquidity_risk = risk_factors.get('liquidity_risk')
+        if liquidity_risk == 'high':
+            warnings.append("⚠️ **Low liquidity - slippage risk**")
+        
+        # Contract verification
+        verification_risk = risk_factors.get('verification_risk')
+        if verification_risk == 'high':
+            warnings.append("⚠️ **Unverified contract**")
+        
+        # Honeypot risk
+        honeypot_risk = risk_factors.get('honeypot_risk', 0)
+        if honeypot_risk > 0.5:
+            warnings.append("🚨 **High honeypot risk**")
+        elif honeypot_risk > 0.3:
+            warnings.append("⚠️ **Moderate honeypot risk**")
+        
+        # AI Risk score
+        risk_score = ai_scores.get('risk', 0)
+        if risk_score < 30:
+            warnings.append("⚠️ **Low AI risk score**")
+        
+        return "\n".join(warnings) if warnings else ""
+    
     try:
         import httpx
         
@@ -231,17 +343,21 @@ async def send_individual_token_notifications(result, network: str,
         
         # FILTER TOKENS by alpha score first
         filtered_tokens = []
-        for token, token_data, score in result.ranked_tokens:
-            if score >= min_alpha_score:
-                filtered_tokens.append((token, token_data, score))
+        for token_data in result.ranked_tokens:
+            # Handle both old format (token, data, score) and new format (token, data, score, ai_data)
+            if len(token_data) >= 3:
+                token, data, score = token_data[:3]
+                if score >= min_alpha_score:
+                    filtered_tokens.append(token_data)
         
         # LIMIT to max_tokens count
         limited_tokens = filtered_tokens[:max_tokens]
         
-        logger.info(f"Token filtering: {len(result.ranked_tokens)} total → {len(filtered_tokens)} above {min_alpha_score} score → {len(limited_tokens)} final (max {max_tokens})")
+        logger.info(f"Enhanced token filtering: {len(result.ranked_tokens)} total → {len(filtered_tokens)} above {min_alpha_score} score → {len(limited_tokens)} final (max {max_tokens})")
         
         if not limited_tokens:
-            logger.info(f"No tokens meet criteria: min_score={min_alpha_score}")
+            max_score = max([t[2] for t in result.ranked_tokens[:3]]) if result.ranked_tokens else 0
+            logger.info(f"No tokens meet criteria: min_score={min_alpha_score}, found max_score={max_score:.1f}")
             
             # Send "no alerts" message
             no_alerts_message = f"""
@@ -250,7 +366,7 @@ async def send_individual_token_notifications(result, network: str,
 🌐 **Network:** {network.upper()}
 📊 **Tokens Found:** {len(result.ranked_tokens)}
 🚫 **Above {min_alpha_score} Score:** 0
-📈 **Highest Score:** {max([score for _, _, score in result.ranked_tokens[:3]]):.1f}
+📈 **Highest Score:** {max_score:.1f}
 
 💡 **Tip:** Lower min_alpha_score to see more alerts
 
@@ -267,59 +383,83 @@ async def send_individual_token_notifications(result, network: str,
         async with httpx.AsyncClient(timeout=30.0) as client:
             
             # Send individual message for each qualifying token
-            for i, (token, token_data, score) in enumerate(limited_tokens):
+            for i, token_tuple in enumerate(limited_tokens):
                 try:
-                    # Determine quality emoji based on score
-                    if score >= 80:
-                        quality_emoji = "🔥🔥🔥"
-                    elif score >= 70:
-                        quality_emoji = "🔥🔥"
-                    elif score >= 60:
-                        quality_emoji = "🔥"
-                    else:
-                        quality_emoji = "⭐"
+                    # Extract data from tuple (handle both old and new formats)
+                    token = token_tuple[0]
+                    token_data = token_tuple[1]
+                    score = token_tuple[2]
+                    ai_data = token_tuple[3] if len(token_tuple) > 3 else {}
+                    
+                    # Extract enhanced data
+                    confidence = ai_data.get('confidence', token_data.get('confidence', 0.7))
+                    ai_enhanced = ai_data.get('ai_enhanced', token_data.get('ai_enhanced', False))
+                    web3_data = ai_data.get('web3_data', token_data.get('web3_data', {}))
+                    ai_scores = ai_data.get('ai_scores', token_data.get('ai_scores', {}))
+                    risk_factors = ai_data.get('risk_factors', token_data.get('risk_factors', {}))
                     
                     # Get contract address and create links
                     contract_address = token_data.get('contract_address', 'Unknown')
                     links = create_token_links(contract_address, token, network)
                     
-                    # Format individual token message with links
+                    # Enhanced quality emoji with AI confidence
+                    quality_emoji = format_ai_quality_emoji(score, confidence, ai_enhanced)
+                    
+                    # Format enhanced token message
                     if result.analysis_type == "buy":
                         message = f"""
 {emoji} **{action} ALERT** {quality_emoji}
 
 🪙 **Token:** `{token}`
+🤖 **AI Alpha Score:** {score:.1f} (confidence: {confidence:.0%})
 🌐 **Network:** {network.upper()}
-📊 **Alpha Score:** {score:.1f}
+
 💰 **ETH Spent:** {token_data.get('total_eth_spent', 0):.4f}
 👥 **Wallets:** {token_data.get('wallet_count', 0)}
 🔄 **Purchases:** {token_data.get('total_purchases', 0)}
 ⭐ **Avg Wallet Score:** {token_data.get('avg_wallet_score', 0):.1f}
-
-📍 **Contract:** `{contract_address[:10]}...`
-🏆 **Rank:** #{i+1} of {len(limited_tokens)} alerts
-
-🔗 **Quick Links:**
 """
                     else:  # sell
                         message = f"""
 {emoji} **{action} ALERT** {quality_emoji}
 
 🪙 **Token:** `{token}`
+🤖 **Sell Pressure:** {score:.1f} (confidence: {confidence:.0%})
 🌐 **Network:** {network.upper()}
-📊 **Sell Pressure:** {score:.1f}
+
 💰 **ETH Received:** {token_data.get('total_eth_received', 0):.4f}
 👥 **Wallets Selling:** {token_data.get('wallet_count', 0)}
 🔄 **Sells:** {token_data.get('total_sells', 0)}
 ⭐ **Avg Wallet Score:** {token_data.get('avg_wallet_score', 0):.1f}
-
-📍 **Contract:** `{contract_address[:10]}...`
-🏆 **Rank:** #{i+1} of {len(limited_tokens)} alerts
-
-🔗 **Quick Links:**
 """
                     
-                    # Add links if available
+                    # Add Web3 insights if available
+                    web3_insights = format_web3_insights(web3_data)
+                    if web3_insights:
+                        message += f"\n🤖 **AI Insights:**\n{web3_insights}\n"
+                    
+                    # Add AI component breakdown for high-confidence tokens
+                    if ai_enhanced and confidence >= 0.7 and ai_scores:
+                        message += f"\n📊 **AI Components:**\n"
+                        if ai_scores.get('volume', 0) > 0:
+                            message += f"Volume: {ai_scores['volume']:.0f} | "
+                        if ai_scores.get('quality', 0) > 0:
+                            message += f"Quality: {ai_scores['quality']:.0f} | "
+                        if ai_scores.get('momentum', 0) > 0:
+                            message += f"Momentum: {ai_scores['momentum']:.0f}"
+                        message = message.rstrip(' | ') + "\n"
+                    
+                    # Add risk warnings if any
+                    risk_warnings = format_risk_warnings(risk_factors, ai_scores)
+                    if risk_warnings:
+                        message += f"\n{risk_warnings}\n"
+                    
+                    message += f"\n📍 **Contract:** `{contract_address[:10]}...`\n"
+                    message += f"🏆 **Rank:** #{i+1} of {len(limited_tokens)} alerts\n"
+                    
+                    # Add quick links
+                    message += "\n🔗 **Quick Links:**\n"
+                    
                     if links.get('dexscreener'):
                         message += f"📈 [DexScreener]({links['dexscreener']})\n"
                     
@@ -356,7 +496,7 @@ async def send_individual_token_notifications(result, network: str,
                         data = response.json()
                         if data.get('ok'):
                             sent_count += 1
-                            logger.info(f"Sent alert for {token} (score: {score:.1f}, rank: #{i+1}) with links")
+                            logger.info(f"Sent enhanced alert for {token} (AI score: {score:.1f}, confidence: {confidence:.0%}, rank: #{i+1})")
                         else:
                             logger.error(f"Telegram API error for {token}: {data.get('description')}")
                             failed_count += 1
@@ -365,18 +505,18 @@ async def send_individual_token_notifications(result, network: str,
                         failed_count += 1
                     
                     # Rate limiting - wait between messages
-                    await asyncio.sleep(1.5)  # Slightly longer for messages with links
+                    await asyncio.sleep(1.5)  # Slightly longer for enhanced messages
                     
                 except Exception as e:
-                    logger.error(f"Failed to send notification for {token}: {e}")
+                    logger.error(f"Failed to send enhanced notification for {token}: {e}")
                     failed_count += 1
                     continue
         
-        # Send summary message with filtering info
+        # Send enhanced summary message
         summary_message = f"""
 📊 **{analysis_type} ALERTS SUMMARY**
 
-✅ **Alerts Sent:** {sent_count}
+✅ **Enhanced Alerts Sent:** {sent_count}
 ❌ **Failed:** {failed_count}
 📈 **Total Tokens Found:** {len(result.ranked_tokens)}
 
@@ -384,11 +524,18 @@ async def send_individual_token_notifications(result, network: str,
 • Min Score: {min_alpha_score} (filtered {skipped_by_score})
 • Max Count: {max_tokens} (limited {skipped_by_limit})
 
+🤖 **AI Enhancement Features:**
+• Real-time Web3 data integration
+• Token age, liquidity & holder analysis
+• Smart money & whale activity detection
+• Risk assessment with confidence scoring
+• Price momentum & volume analysis
+
 🔗 **Each alert includes:**
 📈 DexScreener charts
 🦄 Uniswap trading links  
-🐦 X (Twitter) search
-🔍 Blockchain explorer
+🐦 X (Twitter) sentiment search
+🔍 Blockchain explorer verification
 
 🌐 **Network:** {network.upper()}
 ⏰ {datetime.now().strftime('%H:%M:%S')}
@@ -407,13 +554,13 @@ async def send_individual_token_notifications(result, network: str,
                 await client.post(url, json=summary_payload)
                 
         except Exception as e:
-            logger.error(f"Failed to send summary message: {e}")
+            logger.error(f"Failed to send enhanced summary message: {e}")
         
-        logger.info(f"Enhanced notifications complete: {sent_count} sent with links, {failed_count} failed")
+        logger.info(f"Enhanced notifications complete: {sent_count} sent with AI data, {failed_count} failed")
         return sent_count > 0
         
     except Exception as e:
-        logger.error(f"Failed to send individual token notifications: {e}")
+        logger.error(f"Failed to send enhanced individual token notifications: {e}")
         return False
 
 async def send_bulk_summary_notification(result, network: str) -> bool:
@@ -526,7 +673,7 @@ async def test_telegram_connection() -> Dict[str, Any]:
         }
 
 async def _run_analysis_with_notifications(request_data: Dict) -> Dict[str, Any]:
-    """Enhanced analysis with notification filtering options"""
+    """Enhanced analysis with AI notification support"""
     try:
         # Extract and validate parameters
         config = Config()
@@ -540,11 +687,11 @@ async def _run_analysis_with_notifications(request_data: Dict) -> Dict[str, Any]
         send_notifications = request_data.get('notifications', True)
         notification_type = request_data.get('notification_type', 'individual')
         
-        # NEW: Filtering options with defaults
-        max_tokens = int(request_data.get('max_tokens', 7))  # Default: 7 tokens max
-        min_alpha_score = float(request_data.get('min_alpha_score', 50.0))  # Default: 50 min score
+        # Filtering options with defaults
+        max_tokens = int(request_data.get('max_tokens', 7))
+        min_alpha_score = float(request_data.get('min_alpha_score', 50.0))
         
-        logger.info(f"Analysis params: {network} {analysis_type}, {num_wallets} wallets, {days_back} days")
+        logger.info(f"Enhanced analysis params: {network} {analysis_type}, {num_wallets} wallets, {days_back} days")
         logger.info(f"Notification filters: max_tokens={max_tokens}, min_alpha_score={min_alpha_score}")
         
         # Validate network
@@ -586,7 +733,8 @@ async def _run_analysis_with_notifications(request_data: Dict) -> Dict[str, Any]
             'telegram_status': telegram_status,
             'notifications_enabled': send_notifications,
             'bigquery_configured': bool(config.bigquery_project_id),
-            'alchemy_configured': bool(config.alchemy_api_key)
+            'alchemy_configured': bool(config.alchemy_api_key),
+            'ai_enhancement': 'available'  # Will be determined during analysis
         }
         
         # If debug mode, return early with config info
@@ -601,25 +749,64 @@ async def _run_analysis_with_notifications(request_data: Dict) -> Dict[str, Any]
         
         # Send start notification if enabled
         if send_notifications and telegram_status and telegram_status.get('ready_for_notifications'):
-            start_message = f"""🚀 **ANALYSIS STARTED**
+            start_message = f"""🚀 **ENHANCED ANALYSIS STARTED**
 
 **Network:** {network.upper()}
 **Type:** {analysis_type.capitalize()}
 **Wallets:** {num_wallets}
 **Time Range:** {days_back} days
+**AI Enhancement:** Enabled
 **Filters:** max {max_tokens} tokens, ≥{min_alpha_score} score
 
 ⏰ {datetime.now().strftime('%H:%M:%S')}"""
             
             await send_telegram_notification(start_message)
         
-        # Run analysis
+        # Run enhanced analysis
         try:
-            logger.info(f"Starting {analysis_type} analysis for {network}")
+            logger.info(f"Starting enhanced {analysis_type} analysis for {network}")
             analyzer = await get_analyzer(network, analysis_type)
             result = await analyzer.analyze(num_wallets, days_back)
             
-            # Send notifications with filtering
+            # Extract AI enhancement information
+            ai_info = {
+                'ai_enhanced_tokens': 0,
+                'average_confidence': 0.0,
+                'web3_data_available': False,
+                'risk_assessments': 0
+            }
+            
+            if result.ranked_tokens:
+                # Count AI-enhanced tokens and calculate metrics
+                ai_enhanced_count = 0
+                confidences = []
+                web3_data_count = 0
+                risk_assessment_count = 0
+                
+                for token_tuple in result.ranked_tokens:
+                    if len(token_tuple) > 3:  # Has AI data
+                        token_data = token_tuple[1]
+                        ai_data = token_tuple[3]
+                        
+                        if ai_data.get('ai_enhanced', False):
+                            ai_enhanced_count += 1
+                            confidences.append(ai_data.get('confidence', 0))
+                        
+                        if ai_data.get('web3_data', {}) or token_data.get('web3_data', {}):
+                            web3_data_count += 1
+                        
+                        if ai_data.get('risk_factors', {}) or token_data.get('risk_factors', {}):
+                            risk_assessment_count += 1
+                
+                ai_info = {
+                    'ai_enhanced_tokens': ai_enhanced_count,
+                    'average_confidence': sum(confidences) / len(confidences) if confidences else 0,
+                    'web3_data_available': web3_data_count > 0,
+                    'risk_assessments': risk_assessment_count,
+                    'total_tokens': len(result.ranked_tokens)
+                }
+            
+            # Send enhanced notifications
             if send_notifications and telegram_status and telegram_status.get('ready_for_notifications'):
                 
                 if notification_type == 'individual':
@@ -631,7 +818,7 @@ async def _run_analysis_with_notifications(request_data: Dict) -> Dict[str, Any]
                     await send_bulk_summary_notification(result, network)
                     
                 elif notification_type == 'both':
-                    # Send filtered individual notifications first
+                    # Send enhanced individual notifications first
                     await send_individual_token_notifications(
                         result, network, max_tokens=max_tokens, min_alpha_score=min_alpha_score
                     )
@@ -639,7 +826,7 @@ async def _run_analysis_with_notifications(request_data: Dict) -> Dict[str, Any]
                     await asyncio.sleep(3)
                     await send_bulk_summary_notification(result, network)
             
-            # Add filtering info to result
+            # Enhanced result with AI information
             result_dict = {
                 'network': result.network,
                 'analysis_type': result.analysis_type,
@@ -650,29 +837,38 @@ async def _run_analysis_with_notifications(request_data: Dict) -> Dict[str, Any]
                 'performance_metrics': result.performance_metrics,
                 'timestamp': datetime.utcnow().isoformat(),
                 'success': True,
+                
+                # Enhanced notification filters
                 'notification_filters': {
                     'max_tokens': max_tokens,
                     'min_alpha_score': min_alpha_score,
                     'tokens_above_threshold': len([t for t in result.ranked_tokens if t[2] >= min_alpha_score]),
                     'notifications_sent': min(max_tokens, len([t for t in result.ranked_tokens if t[2] >= min_alpha_score]))
                 },
+                
+                # AI Enhancement information
+                'ai_enhancement': ai_info,
+                
+                # Enhanced debug info
                 'debug_info': debug_info
             }
             
-            logger.info(f"Analysis complete - {result.total_transactions} transactions, {result.unique_tokens} tokens")
+            logger.info(f"Enhanced analysis complete - {result.total_transactions} transactions, {result.unique_tokens} tokens")
+            logger.info(f"AI enhancement: {ai_info['ai_enhanced_tokens']} tokens with AI data, avg confidence: {ai_info['average_confidence']:.2f}")
             return result_dict
             
         except Exception as e:
-            error_msg = f"Analysis failed: {str(e)}"
+            error_msg = f"Enhanced analysis failed: {str(e)}"
             logger.error(error_msg)
             logger.error(f"Analysis traceback: {traceback.format_exc()}")
             
             # Send error notification if configured
             if send_notifications and telegram_status and telegram_status.get('ready_for_notifications'):
                 try:
-                    error_notification = f"❌ **ERROR ({network.upper()})**\n\n"
-                    error_notification += f"**Type:** Analysis Error\n"
+                    error_notification = f"❌ **ENHANCED ANALYSIS ERROR ({network.upper()})**\n\n"
+                    error_notification += f"**Type:** {analysis_type.capitalize()} Analysis Error\n"
                     error_notification += f"**Details:** {str(e)[:200]}\n"
+                    error_notification += f"**AI Enhancement:** May have failed\n"
                     error_notification += f"\n⏰ {datetime.now().strftime('%H:%M:%S')}"
                     await send_telegram_notification(error_notification)
                 except Exception as notify_error:
@@ -687,10 +883,10 @@ async def _run_analysis_with_notifications(request_data: Dict) -> Dict[str, Any]
             }
     
     except Exception as e:
-        logger.error(f"Request processing failed: {e}")
+        logger.error(f"Enhanced request processing failed: {e}")
         logger.error(f"Request processing traceback: {traceback.format_exc()}")
         return {
-            'error': f"Request processing failed: {str(e)}",
+            'error': f"Enhanced request processing failed: {str(e)}",
             'success': False,
             'timestamp': datetime.utcnow().isoformat(),
             'traceback': traceback.format_exc()

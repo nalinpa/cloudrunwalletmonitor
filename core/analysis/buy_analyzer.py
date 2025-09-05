@@ -1,6 +1,4 @@
-﻿# core/analysis/buy_analyzer.py - Enhanced with detailed logging and debug mode
-
-import pandas as pd
+﻿import pandas as pd
 import numpy as np
 from typing import List, Dict
 from datetime import datetime
@@ -18,7 +16,7 @@ from utils.config import Config
 logger = logging.getLogger(__name__)
 
 class CloudBuyAnalyzer:
-    """Cloud-optimized Buy analyzer with extensive debug logging for ETH calculation issues"""
+    """Enhanced Cloud-optimized Buy analyzer with AI-powered alpha scoring"""
     
     def __init__(self, network: str):
         self.network = network
@@ -29,7 +27,7 @@ class CloudBuyAnalyzer:
         self.bigquery_transfer_service = BigQueryTransferService(self.config)
         self.alchemy_service = AlchemyService(self.config)
         
-        # Data processor with debug logging
+        # Enhanced data processor with AI capabilities
         self.data_processor = DataProcessor()
         
         self._initialized = False
@@ -42,36 +40,47 @@ class CloudBuyAnalyzer:
             "transfers_stored": 0,
             "memory_used_mb": 0.0,
             "zero_eth_count": 0,
-            "non_zero_eth_count": 0
+            "non_zero_eth_count": 0,
+            "ai_enhanced_tokens": 0,
+            "ai_confidence_avg": 0.0
         }
         
-        logger.info(f"CloudBuyAnalyzer created for network: {network}")
+        logger.info(f"Enhanced CloudBuyAnalyzer created for network: {network}")
     
     async def initialize(self):
-        """Initialize all services with detailed logging"""
+        """Initialize all services including AI enhancement"""
         try:
-            logger.info(f"=== INITIALIZING CloudBuyAnalyzer for {self.network} ===")
+            logger.info(f"=== INITIALIZING Enhanced CloudBuyAnalyzer for {self.network} ===")
             
-            # Initialize database service (smart_wallets)
+            # Step 1: Initialize database service (smart_wallets)
             logger.info("Step 1: Initializing DatabaseService...")
             await self.db_service.initialize()
             logger.info("✓ DatabaseService initialized successfully")
             
-            # Initialize BigQuery transfer service
+            # Step 2: Initialize BigQuery transfer service
             logger.info("Step 2: Initializing BigQueryTransferService...")
             await self.bigquery_transfer_service.initialize()
             logger.info("✓ BigQueryTransferService initialized successfully")
             
-            # Connect data processor to transfer service
+            # Step 3: Connect data processor to transfer service
             logger.info("Step 3: Connecting data processor...")
             self.data_processor.set_transfer_service(self.bigquery_transfer_service)
             logger.info("✓ Data processor connected")
             
+            # Step 4: Initialize AI enhancement (optional)
+            logger.info("Step 4: Initializing AI Enhancement...")
+            try:
+                await self.data_processor.set_alpha_calculator(self.config)
+                logger.info("✓ AI Enhancement initialized successfully")
+            except Exception as ai_error:
+                logger.warning(f"AI Enhancement failed to initialize: {ai_error}")
+                logger.info("✓ Continuing with basic scoring")
+            
             self._initialized = True
-            logger.info("=== CloudBuyAnalyzer initialization COMPLETE ===")
+            logger.info("=== Enhanced CloudBuyAnalyzer initialization COMPLETE ===")
             
         except Exception as e:
-            logger.error(f"=== CloudBuyAnalyzer initialization FAILED ===")
+            logger.error(f"=== Enhanced CloudBuyAnalyzer initialization FAILED ===")
             logger.error(f"Error: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
@@ -79,14 +88,14 @@ class CloudBuyAnalyzer:
             raise
     
     async def analyze(self, num_wallets: int, days_back: float) -> AnalysisResult:
-        """Main analysis method with detailed step logging and ETH calculation debugging"""
+        """Enhanced buy analysis with AI-powered alpha scoring"""
         start_time = time.time()
         
         try:
             logger.info("=" * 60)
-            logger.info(f" STARTING BUY ANALYSIS FOR {self.network.upper()}")
+            logger.info(f"STARTING ENHANCED AI BUY ANALYSIS FOR {self.network.upper()}")
             logger.info(f"Parameters: {num_wallets} wallets, {days_back} days back")
-            logger.info(f"LOWERED THRESHOLDS FOR TESTING: 0.00001 ETH minimum")
+            logger.info("🤖 AI-Enhanced Alpha Scoring: ENABLED")
             logger.info("=" * 60)
             
             # Step 1: Ensure initialization
@@ -97,7 +106,7 @@ class CloudBuyAnalyzer:
                     logger.error("FATAL: Failed to initialize analyzer")
                     return self._empty_result()
             
-            # Step 2: Get wallets
+            # Step 2: Get wallets from BigQuery
             logger.info("STEP 1: Fetching wallets from BigQuery...")
             step_start = time.time()
             wallets = await self.db_service.get_top_wallets(self.network, num_wallets)
@@ -105,7 +114,6 @@ class CloudBuyAnalyzer:
             
             if not wallets:
                 logger.error(f"FATAL: No wallets found for {self.network}")
-                logger.error("Check your smart_wallets table has data")
                 return self._empty_result()
             
             logger.info(f"✓ Retrieved {len(wallets)} wallets in {wallet_time:.2f}s")
@@ -113,7 +121,7 @@ class CloudBuyAnalyzer:
             
             self.stats["wallets_processed"] = len(wallets)
             
-            # Step 3: Get block range
+            # Step 3: Get block range from Alchemy
             logger.info("STEP 2: Getting block range from Alchemy...")
             step_start = time.time()
             start_block, end_block = await self.alchemy_service.get_block_range(self.network, days_back)
@@ -126,7 +134,7 @@ class CloudBuyAnalyzer:
             logger.info(f"✓ Block range: {start_block} to {end_block} (took {block_time:.2f}s)")
             logger.info(f"Block span: {end_block - start_block} blocks")
             
-            # Step 4: Get transfers
+            # Step 4: Get transfers from Alchemy
             logger.info("STEP 3: Fetching transfers from Alchemy...")
             step_start = time.time()
             wallet_addresses = [w.address for w in wallets]
@@ -162,14 +170,12 @@ class CloudBuyAnalyzer:
             
             if total_transfers == 0:
                 logger.error("FATAL: No transfers found")
-                logger.error(f"Check if wallets are active on {self.network} in the last {days_back} days")
                 return self._empty_result()
             
             self.stats["transfers_processed"] = total_transfers
             
-            # Step 5: Process transfers to purchases with DEBUG MODE
-            logger.info("STEP 4: Processing transfers to purchases with EXTENSIVE DEBUG...")
-            logger.info("⚠️  DEBUG MODE ACTIVE - Expect verbose logging for ETH calculation issues")
+            # Step 5: Process transfers to purchases
+            logger.info("STEP 4: Processing transfers to purchases...")
             step_start = time.time()
             
             purchases = await self.data_processor.process_transfers_to_purchases(
@@ -180,94 +186,108 @@ class CloudBuyAnalyzer:
             logger.info(f"✓ Transfer processing complete in {process_time:.2f}s")
             logger.info(f"Found {len(purchases) if purchases else 0} purchase transactions")
             
-            # Debug analysis of ETH calculation results
-            if purchases:
-                zero_eth = sum(1 for p in purchases if p.eth_spent == 0.0)
-                non_zero_eth = len(purchases) - zero_eth
-                total_eth = sum(p.eth_spent for p in purchases)
-                
-                logger.info("=== ETH CALCULATION RESULTS ===")
-                logger.info(f"Purchases with 0.0 ETH: {zero_eth}")
-                logger.info(f"Purchases with >0.0 ETH: {non_zero_eth}")
-                logger.info(f"Total ETH spent: {total_eth:.6f}")
-                
-                if non_zero_eth > 0:
-                    avg_eth = total_eth / non_zero_eth
-                    logger.info(f"Average ETH per non-zero purchase: {avg_eth:.6f}")
-                
-                # Show top non-zero purchases
-                non_zero_purchases = [p for p in purchases if p.eth_spent > 0]
-                if non_zero_purchases:
-                    non_zero_purchases.sort(key=lambda x: x.eth_spent, reverse=True)
-                    logger.info("Top 5 non-zero ETH purchases:")
-                    for i, p in enumerate(non_zero_purchases[:5]):
-                        logger.info(f"  {i+1}. {p.token_bought}: {p.eth_spent:.6f} ETH")
-                
-                self.stats["zero_eth_count"] = zero_eth
-                self.stats["non_zero_eth_count"] = non_zero_eth
-                logger.info("=== END ETH CALCULATION RESULTS ===")
-            
             if not purchases:
                 logger.error("FATAL: No purchases found after processing transfers")
-                logger.error("This could mean:")
-                logger.error("  - No incoming ERC20 transfers found")
-                logger.error("  - All tokens were excluded (stablecoins, etc.)")
-                logger.error("  - ETH amounts too small (< 0.00001) - THRESHOLD LOWERED FOR TESTING")
-                logger.error("  - ETH calculation logic is completely broken")
-                logger.warning("Check the detailed debug logs above for ETH calculation issues")
                 return self._empty_result()
             
-            # Log purchase details
-            logger.info("Purchase analysis:")
+            # Log purchase details with ETH calculation results
+            zero_eth = sum(1 for p in purchases if p.eth_spent == 0.0)
+            non_zero_eth = len(purchases) - zero_eth
             total_eth = sum(p.eth_spent for p in purchases)
-            tokens = set(p.token_bought for p in purchases)
-            logger.info(f"  - Total ETH spent: {total_eth:.4f}")
-            logger.info(f"  - Unique tokens: {len(tokens)}")
-            logger.info(f"  - Top tokens: {list(tokens)[:5]}")
             
-            # Step 6: Analyze purchases
-            logger.info("STEP 5: Analyzing purchases with pandas...")
+            logger.info("=== ETH CALCULATION RESULTS ===")
+            logger.info(f"Purchases with 0.0 ETH: {zero_eth}")
+            logger.info(f"Purchases with >0.0 ETH: {non_zero_eth}")
+            logger.info(f"Total ETH spent: {total_eth:.6f}")
+            
+            if non_zero_eth > 0:
+                avg_eth = total_eth / non_zero_eth
+                logger.info(f"Average ETH per non-zero purchase: {avg_eth:.6f}")
+                
+                # Show top purchases
+                non_zero_purchases = [p for p in purchases if p.eth_spent > 0]
+                non_zero_purchases.sort(key=lambda x: x.eth_spent, reverse=True)
+                logger.info("Top 5 ETH purchases:")
+                for i, p in enumerate(non_zero_purchases[:5]):
+                    logger.info(f"  {i+1}. {p.token_bought}: {p.eth_spent:.6f} ETH")
+            
+            self.stats["zero_eth_count"] = zero_eth
+            self.stats["non_zero_eth_count"] = non_zero_eth
+            
+            # Validate data quality
+            quality_report = await self.data_processor.validate_data_quality(purchases)
+            logger.info(f"Data quality score: {quality_report.get('data_quality_score', 0):.2f}")
+            if quality_report.get('warnings'):
+                for warning in quality_report['warnings']:
+                    logger.warning(f"Data quality: {warning}")
+            
+            # Step 6: ENHANCED AI ANALYSIS
+            logger.info("STEP 5: Running AI-Enhanced Analysis...")
             step_start = time.time()
             
-            analysis_results = self.data_processor.analyze_purchases(purchases, "buy")
+            # Use enhanced analysis with AI scoring
+            analysis_results = await self.data_processor.analyze_purchases_enhanced(purchases, "buy")
             
             analysis_time = time.time() - step_start
-            logger.info(f"✓ Purchase analysis complete in {analysis_time:.2f}s")
+            logger.info(f"✓ AI-Enhanced analysis complete in {analysis_time:.2f}s")
             
             if not analysis_results:
-                logger.error("FATAL: Analysis returned no results")
+                logger.error("FATAL: Enhanced analysis returned no results")
                 return self._empty_result()
             
-            logger.info("Analysis results:")
-            if 'token_stats' in analysis_results:
-                token_stats = analysis_results['token_stats']
-                logger.info(f"  - Analyzed {len(token_stats)} tokens")
+            # Log AI enhancement details
+            if analysis_results.get('enhanced'):
+                scores = analysis_results.get('scores', {})
+                ai_enhanced_count = sum(1 for s in scores.values() if s.get('ai_enhanced'))
+                
+                if ai_enhanced_count > 0:
+                    confidences = [s.get('confidence', 0) for s in scores.values() if s.get('ai_enhanced')]
+                    avg_confidence = sum(confidences) / len(confidences)
+                    
+                    self.stats["ai_enhanced_tokens"] = ai_enhanced_count
+                    self.stats["ai_confidence_avg"] = avg_confidence
+                    
+                    logger.info(f"🤖 AI Enhancement Results:")
+                    logger.info(f"  - Tokens with AI scoring: {ai_enhanced_count}/{len(scores)}")
+                    logger.info(f"  - Average confidence: {avg_confidence:.2f}")
+                    logger.info(f"  - Web3 data integration: ✓")
+                    
+                    # Log top AI-enhanced token
+                    ai_tokens = [(k, v) for k, v in scores.items() if v.get('ai_enhanced')]
+                    if ai_tokens:
+                        top_ai_token = max(ai_tokens, key=lambda x: x[1]['total_score'])
+                        logger.info(f"  - Top AI token: {top_ai_token[0]} (score: {top_ai_token[1]['total_score']:.1f}, confidence: {top_ai_token[1]['confidence']:.2f})")
+                        
+                        # Log AI component breakdown for top token
+                        ai_scores = top_ai_token[1]
+                        logger.info(f"  - AI Components: Volume:{ai_scores.get('volume_score', 0):.1f}, Quality:{ai_scores.get('quality_score', 0):.1f}, Momentum:{ai_scores.get('momentum_score', 0):.1f}")
+                else:
+                    logger.info("🤖 AI Enhancement: Fallback to basic scoring (no AI data available)")
+            else:
+                logger.info("🤖 AI Enhancement: Using basic scoring method")
             
-            if 'scores' in analysis_results:
-                scores = analysis_results['scores']
-                logger.info(f"  - Generated scores for {len(scores)} tokens")
-                if scores:
-                    top_token = max(scores.items(), key=lambda x: x[1]['total_score'])
-                    logger.info(f"  - Top token: {top_token[0]} (score: {top_token[1]['total_score']:.1f})")
+            # Log comprehensive analysis summary
+            self.data_processor.log_token_analysis_summary(purchases, "buy")
             
-            # Step 7: Update stats and create result
+            # Step 7: Create enhanced result
             self.stats["transfers_stored"] = getattr(self.data_processor, '_last_stored_count', 0)
             self.stats["analysis_time"] = time.time() - start_time
             
-            logger.info("STEP 6: Creating final result...")
-            result = self._create_result(analysis_results, purchases)
+            logger.info("STEP 6: Creating enhanced result...")
+            result = self._create_enhanced_result(analysis_results, purchases)
             
-            # Final summary with debug info
+            # Final summary with AI enhancement info
             logger.info("=" * 60)
-            logger.info("DEBUG BUY ANALYSIS COMPLETE!")
+            logger.info("🤖 ENHANCED AI BUY ANALYSIS COMPLETE!")
             logger.info(f"Total time: {self.stats['analysis_time']:.2f}s")
             logger.info(f"Transactions: {result.total_transactions}")
             logger.info(f"Unique tokens: {result.unique_tokens}")
             logger.info(f"Total ETH value: {result.total_eth_value:.4f}")
             logger.info(f"Transfers stored to BigQuery: {self.stats['transfers_stored']}")
+            logger.info(f"AI-enhanced tokens: {self.stats['ai_enhanced_tokens']}")
+            if self.stats['ai_enhanced_tokens'] > 0:
+                logger.info(f"Average AI confidence: {self.stats['ai_confidence_avg']:.2f}")
             logger.info(f"Top tokens: {len(result.ranked_tokens)}")
-            logger.info(f"Zero ETH purchases: {self.stats['zero_eth_count']}")
-            logger.info(f"Non-zero ETH purchases: {self.stats['non_zero_eth_count']}")
             logger.info("=" * 60)
             
             return result
@@ -275,7 +295,7 @@ class CloudBuyAnalyzer:
         except Exception as e:
             self.stats["analysis_time"] = time.time() - start_time
             logger.error("=" * 60)
-            logger.error("DEBUG BUY ANALYSIS FAILED!")
+            logger.error("🤖 ENHANCED AI BUY ANALYSIS FAILED!")
             logger.error(f"Error: {e}")
             logger.error(f"Time elapsed: {self.stats['analysis_time']:.2f}s")
             import traceback
@@ -283,9 +303,9 @@ class CloudBuyAnalyzer:
             logger.error("=" * 60)
             return self._empty_result()
     
-    def _create_result(self, analysis_results: Dict, purchases: List[Purchase]) -> AnalysisResult:
-        """Create analysis result with logging"""
-        logger.info("Creating final analysis result...")
+    def _create_enhanced_result(self, analysis_results: Dict, purchases: List[Purchase]) -> AnalysisResult:
+        """Create enhanced analysis result with AI scoring details"""
+        logger.info("Creating enhanced AI analysis result...")
         
         if not analysis_results:
             logger.error("Cannot create result - no analysis results")
@@ -293,11 +313,13 @@ class CloudBuyAnalyzer:
         
         token_stats = analysis_results.get('token_stats')
         scores = analysis_results.get('scores', {})
+        is_enhanced = analysis_results.get('enhanced', False)
         
         logger.info(f"Token stats available: {token_stats is not None}")
         logger.info(f"Scores available: {len(scores)} tokens")
+        logger.info(f"AI enhanced: {is_enhanced}")
         
-        # Create ranked tokens
+        # Create ranked tokens with enhanced data
         ranked_tokens = []
         contract_lookup = {p.token_bought: p.web3_analysis.get('contract_address', '') 
                           for p in purchases if p.web3_analysis}
@@ -305,12 +327,13 @@ class CloudBuyAnalyzer:
         logger.info(f"Contract lookup created for {len(contract_lookup)} tokens")
         
         if token_stats is not None and len(scores) > 0:
-            logger.info("Processing token rankings...")
+            logger.info("Processing token rankings with AI enhancement...")
             for token in scores.keys():
                 if token in token_stats.index:
                     stats_data = token_stats.loc[token]
                     score_data = scores[token]
                     
+                    # Enhanced token data with AI metrics
                     token_data = {
                         'total_eth_spent': float(stats_data['total_value']),
                         'wallet_count': int(stats_data['unique_wallets']),
@@ -319,13 +342,47 @@ class CloudBuyAnalyzer:
                         'platforms': ['DEX'],
                         'contract_address': contract_lookup.get(token, ''),
                         'alpha_score': score_data['total_score'],
-                        'is_base_native': self.network == 'base'
+                        'is_base_native': self.network == 'base',
+                        
+                        # AI Enhancement indicators
+                        'ai_enhanced': score_data.get('ai_enhanced', False),
+                        'confidence': score_data.get('confidence', 0.7),
+                        
+                        # Detailed AI component scores
+                        'ai_scores': {
+                            'volume': score_data.get('volume_score', 0),
+                            'quality': score_data.get('quality_score', 0),
+                            'momentum': score_data.get('momentum_score', 0),
+                            'liquidity': score_data.get('liquidity_score', 0),
+                            'risk': score_data.get('risk_score', 0),
+                            'diversity': score_data.get('diversity_score', 0)
+                        },
+                        
+                        # Web3 enriched data
+                        'web3_data': {
+                            'token_age_hours': score_data.get('token_age_hours'),
+                            'holder_count': score_data.get('holder_count'),
+                            'liquidity_eth': score_data.get('liquidity_eth'),
+                            'price_change_24h': score_data.get('price_change_24h'),
+                            'smart_money_percentage': score_data.get('smart_money_percentage'),
+                            'whale_activity': score_data.get('whale_activity')
+                        },
+                        
+                        # Risk assessment
+                        'risk_factors': score_data.get('risk_factors', {}),
+                        
+                        # Analysis metadata
+                        'analysis_timestamp': datetime.utcnow().isoformat(),
+                        'network': self.network
                     }
                     
-                    ranked_tokens.append((token, token_data, score_data['total_score']))
-                    logger.debug(f"Added token: {token} (score: {score_data['total_score']:.1f})")
+                    # Include all enhanced data in tuple for notifications
+                    # Format: (token_name, token_data, score, ai_data)
+                    ranked_tokens.append((token, token_data, score_data['total_score'], score_data))
+                    
+                    logger.debug(f"Added enhanced token: {token} (AI score: {score_data['total_score']:.1f}, enhanced: {score_data.get('ai_enhanced', False)})")
         
-        # Sort by score
+        # Sort by enhanced AI score
         ranked_tokens.sort(key=lambda x: x[2], reverse=True)
         logger.info(f"Final ranked tokens: {len(ranked_tokens)}")
         
@@ -333,7 +390,15 @@ class CloudBuyAnalyzer:
         total_eth = sum(p.eth_spent for p in purchases)
         unique_tokens = len(set(p.token_bought for p in purchases))
         
-        logger.info(f"Result summary: {len(purchases)} transactions, {unique_tokens} tokens, {total_eth:.4f} ETH")
+        logger.info(f"Enhanced result summary: {len(purchases)} transactions, {unique_tokens} tokens, {total_eth:.4f} ETH")
+        
+        # Enhanced performance metrics
+        enhanced_stats = self.stats.copy()
+        enhanced_stats.update({
+            'ai_enhancement_enabled': is_enhanced,
+            'data_quality_score': getattr(self.data_processor, '_last_quality_score', 1.0),
+            'processing_stats': self.data_processor.get_processing_stats()
+        })
         
         return AnalysisResult(
             network=self.network,
@@ -342,13 +407,13 @@ class CloudBuyAnalyzer:
             unique_tokens=unique_tokens,
             total_eth_value=total_eth,
             ranked_tokens=ranked_tokens,
-            performance_metrics=self.stats,
+            performance_metrics=enhanced_stats,
             web3_enhanced=True
         )
     
     def _empty_result(self) -> AnalysisResult:
-        """Return empty result"""
-        logger.warning("Returning empty result")
+        """Return empty result with enhanced metadata"""
+        logger.warning("Returning empty enhanced result")
         return AnalysisResult(
             network=self.network,
             analysis_type="buy",
@@ -361,16 +426,51 @@ class CloudBuyAnalyzer:
         )
     
     async def cleanup(self):
-        """Cleanup resources"""
+        """Enhanced cleanup with AI resources"""
         try:
-            logger.info("Starting cleanup...")
+            logger.info("Starting enhanced cleanup...")
+            
+            # Cleanup AI resources
+            if self.data_processor:
+                await self.data_processor.cleanup_enhanced_scoring()
+            
+            # Cleanup existing services
             if self.db_service:
                 await self.db_service.cleanup()
             
             if self.bigquery_transfer_service:
                 await self.bigquery_transfer_service.cleanup()
                 
-            logger.info("CloudBuyAnalyzer cleanup completed")
+            logger.info("Enhanced CloudBuyAnalyzer cleanup completed")
             
         except Exception as e:
-            logger.error(f"Error during cleanup: {e}")
+            logger.error(f"Error during enhanced cleanup: {e}")
+    
+    # Additional utility methods
+    
+    async def get_analysis_health(self) -> Dict:
+        """Get analyzer health and status"""
+        return {
+            'network': self.network,
+            'initialized': self._initialized,
+            'ai_enhancement_available': self.data_processor._enhanced_scoring_enabled if self.data_processor else False,
+            'last_analysis_stats': self.stats,
+            'services_status': {
+                'database': bool(self.db_service),
+                'bigquery': bool(self.bigquery_transfer_service),
+                'alchemy': bool(self.alchemy_service),
+                'data_processor': bool(self.data_processor)
+            }
+        }
+    
+    def log_performance_summary(self):
+        """Log detailed performance summary"""
+        logger.info("=== BUY ANALYZER PERFORMANCE SUMMARY ===")
+        logger.info(f"Network: {self.network}")
+        logger.info(f"Analysis time: {self.stats.get('analysis_time', 0):.2f}s")
+        logger.info(f"Wallets processed: {self.stats.get('wallets_processed', 0)}")
+        logger.info(f"Transfers processed: {self.stats.get('transfers_processed', 0)}")
+        logger.info(f"Transfers stored: {self.stats.get('transfers_stored', 0)}")
+        logger.info(f"AI enhanced tokens: {self.stats.get('ai_enhanced_tokens', 0)}")
+        logger.info(f"AI confidence average: {self.stats.get('ai_confidence_avg', 0):.2f}")
+        logger.info("=" * 45)

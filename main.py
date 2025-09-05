@@ -63,8 +63,6 @@ def initialize_services():
                 logger.warning(f"Bot token present: {bool(os.getenv('TELEGRAM_BOT_TOKEN'))}")
                 logger.warning(f"Chat ID present: {bool(os.getenv('TELEGRAM_CHAT_ID'))}")
             
-            # Remove MongoDB status logging
-            # logger.info(f"MongoDB configured: {bool(config.mongo_uri)}")
             logger.info(f"BigQuery configured: {bool(config.bigquery_project_id)}")
             logger.info(f"Alchemy configured: {bool(config.alchemy_api_key)}")
             
@@ -171,6 +169,291 @@ async def send_telegram_notification(message: str, parse_mode: str = "Markdown")
         logger.error(f"Traceback: {traceback.format_exc()}")
         return False
 
+async def send_individual_token_notifications(result, network: str, 
+                                             max_tokens: int = 7, 
+                                             min_alpha_score: float = 50.0) -> bool:
+    """Send individual Telegram notifications with DexScreener, Uniswap & X links"""
+    if not check_telegram_config():
+        logger.warning("Telegram not configured - skipping individual notifications")
+        return False
+    
+    if not result.ranked_tokens:
+        logger.info("No tokens to send individual notifications for")
+        return True
+    
+    def create_token_links(contract_address: str, token_symbol: str, network: str) -> Dict[str, str]:
+        """Create useful links for each token"""
+        links = {}
+        
+        if contract_address and contract_address != 'Unknown' and len(contract_address) > 10:
+            # Clean contract address
+            clean_contract = contract_address.lower().strip()
+            
+            # DexScreener link
+            if network.lower() == 'ethereum':
+                links['dexscreener'] = f"https://dexscreener.com/ethereum/{clean_contract}"
+            elif network.lower() == 'base':
+                links['dexscreener'] = f"https://dexscreener.com/base/{clean_contract}"
+            else:
+                links['dexscreener'] = f"https://dexscreener.com/{network.lower()}/{clean_contract}"
+            
+            # Uniswap trade link
+            if network.lower() == 'ethereum':
+                links['uniswap'] = f"https://app.uniswap.org/swap?outputCurrency={clean_contract}&chain=mainnet"
+            elif network.lower() == 'base':
+                links['uniswap'] = f"https://app.uniswap.org/swap?outputCurrency={clean_contract}&chain=base"
+            else:
+                links['uniswap'] = f"https://app.uniswap.org/swap?outputCurrency={clean_contract}"
+            
+            # X (Twitter) search link
+            links['twitter'] = f"https://x.com/search?q={clean_contract}&src=typed_query&f=live"
+            
+            # Etherscan/Basescan link
+            if network.lower() == 'ethereum':
+                links['explorer'] = f"https://etherscan.io/token/{clean_contract}"
+            elif network.lower() == 'base':
+                links['explorer'] = f"https://basescan.org/token/{clean_contract}"
+            else:
+                links['explorer'] = f"#{clean_contract[:10]}..."
+        
+        return links
+    
+    try:
+        import httpx
+        
+        bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
+        chat_id = os.getenv('TELEGRAM_CHAT_ID')
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        
+        analysis_type = result.analysis_type.upper()
+        emoji = "🟢" if result.analysis_type == "buy" else "🔴"
+        action = "BUYING" if result.analysis_type == "buy" else "SELLING"
+        
+        # FILTER TOKENS by alpha score first
+        filtered_tokens = []
+        for token, token_data, score in result.ranked_tokens:
+            if score >= min_alpha_score:
+                filtered_tokens.append((token, token_data, score))
+        
+        # LIMIT to max_tokens count
+        limited_tokens = filtered_tokens[:max_tokens]
+        
+        logger.info(f"Token filtering: {len(result.ranked_tokens)} total → {len(filtered_tokens)} above {min_alpha_score} score → {len(limited_tokens)} final (max {max_tokens})")
+        
+        if not limited_tokens:
+            logger.info(f"No tokens meet criteria: min_score={min_alpha_score}")
+            
+            # Send "no alerts" message
+            no_alerts_message = f"""
+⚪ **NO {analysis_type} ALERTS**
+
+🌐 **Network:** {network.upper()}
+📊 **Tokens Found:** {len(result.ranked_tokens)}
+🚫 **Above {min_alpha_score} Score:** 0
+📈 **Highest Score:** {max([score for _, _, score in result.ranked_tokens[:3]]):.1f}
+
+💡 **Tip:** Lower min_alpha_score to see more alerts
+
+⏰ {datetime.now().strftime('%H:%M:%S')}
+"""
+            await send_telegram_notification(no_alerts_message.strip())
+            return True
+        
+        sent_count = 0
+        failed_count = 0
+        skipped_by_score = len(result.ranked_tokens) - len(filtered_tokens)
+        skipped_by_limit = len(filtered_tokens) - len(limited_tokens)
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            
+            # Send individual message for each qualifying token
+            for i, (token, token_data, score) in enumerate(limited_tokens):
+                try:
+                    # Determine quality emoji based on score
+                    if score >= 80:
+                        quality_emoji = "🔥🔥🔥"
+                    elif score >= 70:
+                        quality_emoji = "🔥🔥"
+                    elif score >= 60:
+                        quality_emoji = "🔥"
+                    else:
+                        quality_emoji = "⭐"
+                    
+                    # Get contract address and create links
+                    contract_address = token_data.get('contract_address', 'Unknown')
+                    links = create_token_links(contract_address, token, network)
+                    
+                    # Format individual token message with links
+                    if result.analysis_type == "buy":
+                        message = f"""
+{emoji} **{action} ALERT** {quality_emoji}
+
+🪙 **Token:** `{token}`
+🌐 **Network:** {network.upper()}
+📊 **Alpha Score:** {score:.1f}
+💰 **ETH Spent:** {token_data.get('total_eth_spent', 0):.4f}
+👥 **Wallets:** {token_data.get('wallet_count', 0)}
+🔄 **Purchases:** {token_data.get('total_purchases', 0)}
+⭐ **Avg Wallet Score:** {token_data.get('avg_wallet_score', 0):.1f}
+
+📍 **Contract:** `{contract_address[:10]}...`
+🏆 **Rank:** #{i+1} of {len(limited_tokens)} alerts
+
+🔗 **Quick Links:**
+"""
+                    else:  # sell
+                        message = f"""
+{emoji} **{action} ALERT** {quality_emoji}
+
+🪙 **Token:** `{token}`
+🌐 **Network:** {network.upper()}
+📊 **Sell Pressure:** {score:.1f}
+💰 **ETH Received:** {token_data.get('total_eth_received', 0):.4f}
+👥 **Wallets Selling:** {token_data.get('wallet_count', 0)}
+🔄 **Sells:** {token_data.get('total_sells', 0)}
+⭐ **Avg Wallet Score:** {token_data.get('avg_wallet_score', 0):.1f}
+
+📍 **Contract:** `{contract_address[:10]}...`
+🏆 **Rank:** #{i+1} of {len(limited_tokens)} alerts
+
+🔗 **Quick Links:**
+"""
+                    
+                    # Add links if available
+                    if links.get('dexscreener'):
+                        message += f"📈 [DexScreener]({links['dexscreener']})\n"
+                    
+                    if links.get('uniswap'):
+                        message += f"🦄 [Trade on Uniswap]({links['uniswap']})\n"
+                    
+                    if links.get('twitter'):
+                        message += f"🐦 [Search on X]({links['twitter']})\n"
+                    
+                    if links.get('explorer'):
+                        if network.lower() == 'ethereum':
+                            message += f"🔍 [Etherscan]({links['explorer']})\n"
+                        elif network.lower() == 'base':
+                            message += f"🔍 [Basescan]({links['explorer']})\n"
+                        else:
+                            message += f"🔍 [Explorer]({links['explorer']})\n"
+                    
+                    message += f"\n⏰ {datetime.now().strftime('%H:%M:%S')}"
+                    
+                    payload = {
+                        "chat_id": chat_id,
+                        "text": message.strip(),
+                        "parse_mode": "Markdown",
+                        "disable_web_page_preview": True
+                    }
+                    
+                    response = await client.post(
+                        url, 
+                        json=payload,
+                        headers={"Content-Type": "application/json"}
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        if data.get('ok'):
+                            sent_count += 1
+                            logger.info(f"Sent alert for {token} (score: {score:.1f}, rank: #{i+1}) with links")
+                        else:
+                            logger.error(f"Telegram API error for {token}: {data.get('description')}")
+                            failed_count += 1
+                    else:
+                        logger.error(f"HTTP error for {token}: {response.status_code}")
+                        failed_count += 1
+                    
+                    # Rate limiting - wait between messages
+                    await asyncio.sleep(1.5)  # Slightly longer for messages with links
+                    
+                except Exception as e:
+                    logger.error(f"Failed to send notification for {token}: {e}")
+                    failed_count += 1
+                    continue
+        
+        # Send summary message with filtering info
+        summary_message = f"""
+📊 **{analysis_type} ALERTS SUMMARY**
+
+✅ **Alerts Sent:** {sent_count}
+❌ **Failed:** {failed_count}
+📈 **Total Tokens Found:** {len(result.ranked_tokens)}
+
+🔽 **Filtering Applied:**
+• Min Score: {min_alpha_score} (filtered {skipped_by_score})
+• Max Count: {max_tokens} (limited {skipped_by_limit})
+
+🔗 **Each alert includes:**
+📈 DexScreener charts
+🦄 Uniswap trading links  
+🐦 X (Twitter) search
+🔍 Blockchain explorer
+
+🌐 **Network:** {network.upper()}
+⏰ {datetime.now().strftime('%H:%M:%S')}
+"""
+        
+        # Send summary
+        try:
+            summary_payload = {
+                "chat_id": chat_id,
+                "text": summary_message.strip(),
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True
+            }
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                await client.post(url, json=summary_payload)
+                
+        except Exception as e:
+            logger.error(f"Failed to send summary message: {e}")
+        
+        logger.info(f"Enhanced notifications complete: {sent_count} sent with links, {failed_count} failed")
+        return sent_count > 0
+        
+    except Exception as e:
+        logger.error(f"Failed to send individual token notifications: {e}")
+        return False
+
+async def send_bulk_summary_notification(result, network: str) -> bool:
+    """Send bulk summary notification"""
+    if not check_telegram_config():
+        return False
+    
+    try:
+        analysis_type = result.analysis_type.upper()
+        emoji = "🟢" if result.analysis_type == "buy" else "🔴"
+        
+        # Create bulk summary
+        message = f"""
+{emoji} **{analysis_type} ANALYSIS COMPLETE**
+
+🌐 **Network:** {network.upper()}
+📊 **Transactions:** {result.total_transactions}
+🪙 **Unique Tokens:** {result.unique_tokens}
+💰 **Total ETH:** {result.total_eth_value:.4f}
+
+🏆 **Top 5 Tokens:**
+"""
+        
+        # Add top 5 tokens
+        for i, (token, token_data, score) in enumerate(result.ranked_tokens[:5]):
+            if result.analysis_type == "buy":
+                eth_value = token_data.get('total_eth_spent', 0)
+                message += f"{i+1}. `{token}` - {score:.1f} - {eth_value:.3f}Ξ\n"
+            else:
+                eth_value = token_data.get('total_eth_received', 0)
+                message += f"{i+1}. `{token}` - {score:.1f} - {eth_value:.3f}Ξ\n"
+        
+        message += f"\n⏰ {datetime.now().strftime('%H:%M:%S')}"
+        
+        return await send_telegram_notification(message)
+        
+    except Exception as e:
+        logger.error(f"Failed to send bulk summary: {e}")
+        return False
+
 async def test_telegram_connection() -> Dict[str, Any]:
     """Test Telegram connection and return detailed status"""
     if not check_telegram_config():
@@ -243,7 +526,7 @@ async def test_telegram_connection() -> Dict[str, Any]:
         }
 
 async def _run_analysis_with_notifications(request_data: Dict) -> Dict[str, Any]:
-    """Run analysis and send notifications with better error handling"""
+    """Enhanced analysis with notification filtering options"""
     try:
         # Extract and validate parameters
         config = Config()
@@ -252,19 +535,22 @@ async def _run_analysis_with_notifications(request_data: Dict) -> Dict[str, Any]
         num_wallets = min(int(request_data.get('num_wallets', 50)), config.max_wallets)
         days_back = float(request_data.get('days_back', 1.0))
         debug_mode = request_data.get('debug', False)
-        send_notifications = request_data.get('notifications', True)
         
-        logger.info(f"Running analysis: {network} {analysis_type} with {num_wallets} wallets, notifications: {send_notifications}")
+        # Notification settings
+        send_notifications = request_data.get('notifications', True)
+        notification_type = request_data.get('notification_type', 'individual')
+        
+        # NEW: Filtering options with defaults
+        max_tokens = int(request_data.get('max_tokens', 7))  # Default: 7 tokens max
+        min_alpha_score = float(request_data.get('min_alpha_score', 50.0))  # Default: 50 min score
+        
+        logger.info(f"Analysis params: {network} {analysis_type}, {num_wallets} wallets, {days_back} days")
+        logger.info(f"Notification filters: max_tokens={max_tokens}, min_alpha_score={min_alpha_score}")
         
         # Validate network
         if network not in config.supported_networks:
             error_msg = f'Invalid network: {network}'
             logger.error(error_msg)
-            if send_notifications and check_telegram_config():
-                try:
-                    await send_telegram_notification(f"❌ **ERROR**\n\n**Type:** Configuration Error\n**Details:** {error_msg}")
-                except:
-                    pass
             return {
                 "error": error_msg,
                 "success": False,
@@ -293,7 +579,9 @@ async def _run_analysis_with_notifications(request_data: Dict) -> Dict[str, Any]
                 'network': network,
                 'analysis_type': analysis_type,
                 'num_wallets': num_wallets,
-                'days_back': days_back
+                'days_back': days_back,
+                'max_tokens': max_tokens,
+                'min_alpha_score': min_alpha_score
             },
             'telegram_status': telegram_status,
             'notifications_enabled': send_notifications,
@@ -319,40 +607,39 @@ async def _run_analysis_with_notifications(request_data: Dict) -> Dict[str, Any]
 **Type:** {analysis_type.capitalize()}
 **Wallets:** {num_wallets}
 **Time Range:** {days_back} days
+**Filters:** max {max_tokens} tokens, ≥{min_alpha_score} score
 
 ⏰ {datetime.now().strftime('%H:%M:%S')}"""
             
             await send_telegram_notification(start_message)
         
-        # Run normal analysis
+        # Run analysis
         try:
             logger.info(f"Starting {analysis_type} analysis for {network}")
             analyzer = await get_analyzer(network, analysis_type)
             result = await analyzer.analyze(num_wallets, days_back)
             
-            # Send success notification with results
+            # Send notifications with filtering
             if send_notifications and telegram_status and telegram_status.get('ready_for_notifications'):
-                success_message = f"""✅ **ANALYSIS COMPLETE**
-
-**Network:** {network.upper()}
-**Type:** {analysis_type.capitalize()}
-**Results:**
-• {result.total_transactions} transactions
-• {result.unique_tokens} unique tokens
-• {result.total_eth_value:.4f} ETH total volume
-
-⏰ {datetime.now().strftime('%H:%M:%S')}"""
-
-                # Add top token info if available
-                if result.ranked_tokens:
-                    top_token = result.ranked_tokens[0]
-                    success_message += f"\n\n🏆 **Top Token:** {top_token[0]}"
-                    if len(top_token) > 2:
-                        success_message += f" (Score: {top_token[2]:.1f})"
                 
-                await send_telegram_notification(success_message)
+                if notification_type == 'individual':
+                    await send_individual_token_notifications(
+                        result, network, max_tokens=max_tokens, min_alpha_score=min_alpha_score
+                    )
+                    
+                elif notification_type == 'bulk':
+                    await send_bulk_summary_notification(result, network)
+                    
+                elif notification_type == 'both':
+                    # Send filtered individual notifications first
+                    await send_individual_token_notifications(
+                        result, network, max_tokens=max_tokens, min_alpha_score=min_alpha_score
+                    )
+                    # Wait then send summary
+                    await asyncio.sleep(3)
+                    await send_bulk_summary_notification(result, network)
             
-            # Convert to dict for JSON serialization
+            # Add filtering info to result
             result_dict = {
                 'network': result.network,
                 'analysis_type': result.analysis_type,
@@ -363,6 +650,12 @@ async def _run_analysis_with_notifications(request_data: Dict) -> Dict[str, Any]
                 'performance_metrics': result.performance_metrics,
                 'timestamp': datetime.utcnow().isoformat(),
                 'success': True,
+                'notification_filters': {
+                    'max_tokens': max_tokens,
+                    'min_alpha_score': min_alpha_score,
+                    'tokens_above_threshold': len([t for t in result.ranked_tokens if t[2] >= min_alpha_score]),
+                    'notifications_sent': min(max_tokens, len([t for t in result.ranked_tokens if t[2] >= min_alpha_score]))
+                },
                 'debug_info': debug_info
             }
             
@@ -405,9 +698,9 @@ async def _run_analysis_with_notifications(request_data: Dict) -> Dict[str, Any]
 
 @functions_framework.http
 def crypto_analysis_function(request: Request):
-    """Cloud Functions HTTP entry point - BigQuery only"""
+    """Cloud Functions HTTP entry point with filtered notifications"""
     
-    logger.info("Function invoked (BigQuery-only mode)")
+    logger.info("Function invoked with filtered notification support")
     
     # Initialize services on first request
     try:
@@ -444,41 +737,44 @@ def crypto_analysis_function(request: Request):
             debug_param = request.args.get('debug', '').lower() == 'true'
             
             basic_response = {
-                "message": "Crypto Analysis Function - BigQuery Only",
+                "message": "Crypto Analysis Function with Filtered Notifications",
                 "status": "healthy",
-                "version": "4.0.0-bigquery-only",
+                "version": "5.0.0-filtered-notifications",
                 "service": "crypto-analysis-cloud-function",
                 "timestamp": datetime.utcnow().isoformat(),
                 "initialized": _initialized,
                 "telegram_configured": check_telegram_config(),
-                "database_type": "BigQuery"
+                "database_type": "BigQuery",
+                "features": [
+                    "Individual token notifications",
+                    "Notification filtering by score and count",
+                    "Quality emojis",
+                    "Rate limiting"
+                ]
             }
             
             if debug_param and _initialized:
-                # Add detailed config info for debugging
                 try:
                     config = Config()
-                    
-                    # Get detailed Telegram status
                     telegram_status = asyncio.run(test_telegram_connection())
                     
                     basic_response['debug_info'] = {
                         'bigquery_configured': bool(config.bigquery_project_id),
                         'alchemy_configured': bool(config.alchemy_api_key),
-                        'bigquery_project': config.bigquery_project_id,
-                        'bigquery_dataset': config.bigquery_dataset_id,
-                        'bigquery_location': config.bigquery_location,
                         'supported_networks': config.supported_networks,
-                        'wallets_table': 'smart_wallets',
-                        'transfers_table': config.bigquery_transfers_table,
-                        'telegram_detailed': telegram_status
+                        'telegram_detailed': telegram_status,
+                        'notification_defaults': {
+                            'max_tokens': 7,
+                            'min_alpha_score': 50.0,
+                            'notification_type': 'individual'
+                        }
                     }
                 except Exception as debug_error:
                     basic_response['debug_error'] = str(debug_error)
             
             return (json.dumps(basic_response), 200, headers)
         
-        # Handle POST request for Telegram test
+        # Handle POST request for analysis
         if request.method == 'POST':
             # Get JSON data
             request_json = request.get_json(silent=True)
@@ -491,7 +787,7 @@ def crypto_analysis_function(request: Request):
             
             logger.info(f"Running analysis request: {request_json}")
             
-            # Run analysis
+            # Run analysis with filtering
             try:
                 result = asyncio.run(_run_analysis_with_notifications(request_json))
                 status_code = 200 if result.get('success', False) else 500
@@ -530,5 +826,5 @@ def crypto_analysis_function(request: Request):
 
 # For local testing
 if __name__ == "__main__":
-    logger.info("Starting local test - BigQuery only")
+    logger.info("Starting local test with filtered notifications")
     initialize_services()

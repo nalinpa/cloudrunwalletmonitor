@@ -10,13 +10,15 @@ logger = logging.getLogger(__name__)
 
 # Import AI scoring if available
 try:
-    from services.score.calculator import EnhancedAlphaCalculator, TokenMetrics
-    AI_SCORING_AVAILABLE = True
-except ImportError:
-    logger.warning("AI scoring not available - falling back to basic scoring")
-    AI_SCORING_AVAILABLE = False
-    EnhancedAlphaCalculator = None
-    TokenMetrics = None
+    from core.analysis.ai_system import AdvancedCryptoAI
+    AI_COMPLETE = True
+    print("🚀 Advanced AI with pandas-ta + TextBlob loaded successfully!")
+except ImportError as e:
+    AI_COMPLETE = False
+    print(f"⚠️ Advanced AI not available: {e}")
+
+# REMOVED: Deprecated calculator imports - using direct AI analysis instead
+AI_SCORING_AVAILABLE = AI_COMPLETE
 
 class DataProcessor:
     """Enhanced data processor with AI-powered alpha scoring and improved sell detection"""
@@ -39,29 +41,22 @@ class DataProcessor:
         self.bigquery_transfer_service: BigQueryTransferService = None
         self._last_stored_count = 0
         
-        # AI Enhancement
-        self.alpha_calculator = None
-        self._enhanced_scoring_enabled = AI_SCORING_AVAILABLE
+        # AI Enhancement - simplified
+        self._enhanced_scoring_enabled = AI_COMPLETE
+        
+        if AI_COMPLETE:
+            self.ai_engine = AdvancedCryptoAI()
+            print("🤖 Complete AI Enhancement: ENABLED")
+            print("✅ Features: Technical Analysis, Sentiment, ML, Whale Detection")
+        else:
+            self.ai_engine = None
+            print("📊 Basic analysis only")
     
     def set_transfer_service(self, transfer_service: BigQueryTransferService):
         """Set the BigQuery transfer service for database operations"""
         self.bigquery_transfer_service = transfer_service
     
-    async def set_alpha_calculator(self, config):
-        """Initialize the enhanced alpha calculator"""
-        if not AI_SCORING_AVAILABLE:
-            logger.warning("AI scoring packages not available")
-            self._enhanced_scoring_enabled = False
-            return
-        
-        try:
-            self.alpha_calculator = EnhancedAlphaCalculator(config)
-            await self.alpha_calculator.initialize()
-            logger.info("Enhanced Alpha Calculator initialized successfully")
-            self._enhanced_scoring_enabled = True
-        except Exception as e:
-            logger.error(f"Failed to initialize Enhanced Alpha Calculator: {e}")
-            self._enhanced_scoring_enabled = False
+    # REMOVED: set_alpha_calculator method - no longer needed
     
     def is_excluded_token(self, asset: str, contract_address: str = None) -> bool:
         """Check if token should be excluded"""
@@ -677,117 +672,79 @@ class DataProcessor:
             logger.error(f"Traceback: {traceback.format_exc()}")
             return {}
     
-    async def analyze_purchases_enhanced(self, purchases: List[Purchase], analysis_type: str) -> Dict:
-        """Enhanced analysis with AI-powered alpha scoring"""
-        if not purchases:
-            return {}
+    async def analyze_purchases_enhanced(self, purchases: List, analysis_type: str) -> Dict:
+        """COMPLETE AI-Enhanced analysis with all features"""
         
-        try:
-            logger.info(f"Running enhanced AI analysis on {len(purchases)} {analysis_type} transactions")
-            
-            # Basic pandas analysis (fallback)
-            basic_results = self.analyze_purchases(purchases, analysis_type)
-            
-            if not basic_results or not self._enhanced_scoring_enabled or not self.alpha_calculator:
-                logger.warning("AI enhancement not available - falling back to basic scoring")
-                return basic_results
-            
-            # Enhanced AI scoring
-            enhanced_scores = await self._calculate_enhanced_scores(purchases, analysis_type, basic_results)
-            
-            # Merge enhanced scores with basic results
-            if enhanced_scores:
-                basic_results['scores'] = enhanced_scores
-                basic_results['enhanced'] = True
-                logger.info(f"AI enhancement complete for {len(enhanced_scores)} tokens")
-            else:
-                logger.warning("AI enhancement failed - using basic scores")
-            
-            return basic_results
-            
-        except Exception as e:
-            logger.error(f"Enhanced analysis failed, falling back to basic: {e}")
-            return self.analyze_purchases(purchases, analysis_type)
+        if self._enhanced_scoring_enabled and self.ai_engine:
+            try:
+                logger.info(f"🚀 LAUNCHING COMPLETE AI ANALYSIS...")
+                
+                # Run complete AI analysis
+                result = await self.ai_engine.complete_ai_analysis(purchases, analysis_type)
+                
+                if result.get('enhanced'):
+                    # Log amazing results
+                    summary = result.get('analysis_summary', {})
+                    logger.info(f"🎉 COMPLETE AI SUCCESS!")
+                    logger.info(f"🔍 AI Patterns Detected: {summary.get('ai_patterns_detected', 0)}")
+                    logger.info(f"🎯 High Confidence Tokens: {summary.get('high_confidence_tokens', 0)}")
+                    logger.info(f"⚠️ Risk Alerts: {summary.get('risk_alerts', 0)}")
+                    logger.info(f"📈 Bullish Sentiment: {summary.get('sentiment_bullish', 0)}")
+                    logger.info(f"🚀 Pump Signals: {summary.get('pump_signals', 0)}")
+                    
+                    return result
+                    
+            except Exception as e:
+                logger.error(f"Complete AI failed: {e}")
+        
+        # Fallback to your existing basic analysis
+        logger.info("📊 Using basic analysis fallback")
+        return self.analyze_purchases(purchases, analysis_type)
     
-    async def _calculate_enhanced_scores(self, purchases: List[Purchase], 
-                                       analysis_type: str, basic_results: Dict) -> Dict:
-        """Calculate enhanced AI-powered alpha scores"""
-        try:
-            token_stats = basic_results.get('token_stats')
-            if token_stats is None:
-                logger.warning("No token stats available for AI enhancement")
-                return {}
-            
-            enhanced_scores = {}
-            
-            # Process each token with AI enhancement
-            for token in token_stats.index:
-                try:
-                    # Gather token metrics
-                    stats_row = token_stats.loc[token]
-                    token_purchases = [p for p in purchases if p.token_bought == token]
-                    
-                    if not token_purchases:
-                        continue
-                    
-                    # Create comprehensive token metrics for AI
-                    metrics = TokenMetrics(
-                        symbol=token,
-                        contract_address=self._get_contract_address(token_purchases),
-                        network=self._get_network(token_purchases),
-                        total_eth_volume=float(stats_row['total_value']),
-                        unique_wallets=int(stats_row['unique_wallets']),
-                        transaction_count=int(stats_row['tx_count']),
-                        avg_wallet_score=float(stats_row['avg_score'])
-                    )
-                    
-                    logger.debug(f"Processing AI enhancement for {token}")
-                    
-                    # Calculate enhanced alpha score with AI
-                    enhanced_score, breakdown = await self.alpha_calculator.calculate_enhanced_alpha_score(metrics)
-                    
-                    # Store enhanced score with detailed breakdown
-                    enhanced_scores[token] = {
-                        'total_score': float(enhanced_score),
-                        'ai_enhanced': True,
-                        'confidence': breakdown.get('confidence_level', 0.7),
-                        'breakdown': breakdown,
-                        
-                        # Component scores for transparency
-                        'volume_score': breakdown.get('base_scores', {}).get('volume_score', 0),
-                        'quality_score': breakdown.get('base_scores', {}).get('wallet_quality', 0),
-                        'momentum_score': breakdown.get('base_scores', {}).get('momentum', 0),
-                        'liquidity_score': breakdown.get('base_scores', {}).get('liquidity', 0),
-                        'risk_score': breakdown.get('base_scores', {}).get('risk_factor', 0),
-                        'diversity_score': breakdown.get('base_scores', {}).get('holder_distribution', 0),
-                        
-                        # Risk assessment
-                        'risk_factors': breakdown.get('risk_factors', {}),
-                        'smart_money_percentage': metrics.smart_money_percentage,
-                        'whale_activity': metrics.whale_activity,
-                        
-                        # Web3 enriched data
-                        'token_age_hours': metrics.token_age_hours,
-                        'holder_count': metrics.holder_count,
-                        'liquidity_eth': metrics.liquidity_eth,
-                        'price_change_24h': metrics.price_change_24h
-                    }
-                    
-                    logger.info(f"AI enhanced score for {token}: {enhanced_score:.2f} (confidence: {breakdown.get('confidence_level', 0.7):.2f})")
-                    
-                except Exception as e:
-                    logger.error(f"Error calculating enhanced score for {token}: {e}")
-                    # Fallback to basic scoring for this token
-                    continue
-            
-            logger.info(f"AI enhancement processed {len(enhanced_scores)} tokens successfully")
-            return enhanced_scores
-            
-        except Exception as e:
-            logger.error(f"Error in enhanced scoring: {e}")
-            import traceback
-            logger.error(f"AI enhancement traceback: {traceback.format_exc()}")
-            return {}
+    def get_ai_insights_summary(self, result: Dict) -> str:
+        """Get human-readable AI insights summary"""
+        if not result.get('enhanced'):
+            return "Basic analysis - no AI insights available"
+        
+        summary = result.get('analysis_summary', {})
+        ai_analyses = result.get('ai_analyses', {})
+        
+        insights = []
+        insights.append(f"🤖 AI Analysis Complete!")
+        insights.append(f"📊 {summary.get('total_tokens', 0)} tokens analyzed")
+        insights.append(f"🔍 {summary.get('ai_patterns_detected', 0)} patterns detected")
+        
+        # Whale coordination
+        whale_coord = ai_analyses.get('whale_coordination', {})
+        if whale_coord.get('detected'):
+            insights.append(f"🐋 Whale coordination detected: {whale_coord.get('evidence_strength', 'UNKNOWN')} evidence")
+        
+        # Pump signals
+        pump_signals = ai_analyses.get('pump_signals', {})
+        if pump_signals.get('detected'):
+            insights.append(f"🚀 Pump signal: {pump_signals.get('phase', 'UNKNOWN')} phase")
+        
+        # Technical strength
+        technical = ai_analyses.get('technical_indicators', {})
+        tech_strength = technical.get('strength', 0)
+        if tech_strength > 0.6:
+            insights.append(f"📈 Strong technical signals: {tech_strength:.0%}")
+        
+        # Smart money
+        smart_money = ai_analyses.get('smart_money_flow', {})
+        direction = smart_money.get('flow_direction', 'NEUTRAL')
+        if direction != 'NEUTRAL':
+            insights.append(f"🧠 Smart money: {direction}")
+        
+        # Risk assessment
+        risk = ai_analyses.get('risk_assessment', {})
+        risk_level = risk.get('risk_level', 'UNKNOWN')
+        if risk_level in ['HIGH', 'EXTREME']:
+            insights.append(f"⚠️ Risk level: {risk_level}")
+        
+        return "\n".join(insights)
+    
+    # REMOVED: _calculate_enhanced_scores method - deprecated calculator logic
     
     def _get_contract_address(self, token_purchases: List[Purchase]) -> str:
         """Extract contract address from purchases"""
@@ -804,14 +761,7 @@ class DataProcessor:
         # You can enhance this based on your data structure
         return "ethereum"  # Default fallback
     
-    async def cleanup_enhanced_scoring(self):
-        """Cleanup enhanced scoring resources"""
-        if self.alpha_calculator:
-            try:
-                await self.alpha_calculator.cleanup()
-                logger.info("Enhanced scoring resources cleaned up")
-            except Exception as e:
-                logger.error(f"Error cleaning up enhanced scoring: {e}")
+    # REMOVED: cleanup_enhanced_scoring method - no longer needed
     
     # Additional utility methods for debugging and monitoring
     

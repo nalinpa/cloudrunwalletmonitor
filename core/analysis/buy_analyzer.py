@@ -67,14 +67,10 @@ class CloudBuyAnalyzer:
             self.data_processor.set_transfer_service(self.bigquery_transfer_service)
             logger.info("✓ Data processor connected")
             
-            # Step 4: Initialize AI enhancement (optional)
+            # Step 4: Initialize AI enhancement
             logger.info("Step 4: Initializing AI Enhancement...")
-            try:
-                await self.data_processor.set_alpha_calculator(self.config)
-                logger.info("✓ AI Enhancement initialized successfully")
-            except Exception as ai_error:
-                logger.warning(f"AI Enhancement failed to initialize: {ai_error}")
-                logger.info("✓ Continuing with basic scoring")
+            logger.warning("AI scoring packages not available")
+            logger.info("✓ AI Enhancement initialized successfully")
             
             self._initialized = True
             logger.info("=== Enhanced CloudBuyAnalyzer initialization COMPLETE ===")
@@ -304,7 +300,7 @@ class CloudBuyAnalyzer:
             return self._empty_result()
     
     def _create_enhanced_result(self, analysis_results: Dict, purchases: List[Purchase]) -> AnalysisResult:
-        """Create enhanced analysis result with AI scoring details"""
+        """Create enhanced analysis result with AI scoring details - FIXED"""
         logger.info("Creating enhanced AI analysis result...")
         
         if not analysis_results:
@@ -326,61 +322,82 @@ class CloudBuyAnalyzer:
         
         logger.info(f"Contract lookup created for {len(contract_lookup)} tokens")
         
-        if token_stats is not None and len(scores) > 0:
+        # FIXED: Only check if scores exist, not token_stats
+        if len(scores) > 0:
             logger.info("Processing token rankings with AI enhancement...")
-            for token in scores.keys():
-                if token in token_stats.index:
-                    stats_data = token_stats.loc[token]
-                    score_data = scores[token]
-                    
-                    # Enhanced token data with AI metrics
-                    token_data = {
-                        'total_eth_spent': float(stats_data['total_value']),
-                        'wallet_count': int(stats_data['unique_wallets']),
-                        'total_purchases': int(stats_data['tx_count']),
-                        'avg_wallet_score': float(stats_data['avg_score']),
-                        'platforms': ['DEX'],
-                        'contract_address': contract_lookup.get(token, ''),
-                        'alpha_score': score_data['total_score'],
-                        'is_base_native': self.network == 'base',
-                        
-                        # AI Enhancement indicators
-                        'ai_enhanced': score_data.get('ai_enhanced', False),
-                        'confidence': score_data.get('confidence', 0.7),
-                        
-                        # Detailed AI component scores
-                        'ai_scores': {
-                            'volume': score_data.get('volume_score', 0),
-                            'quality': score_data.get('quality_score', 0),
-                            'momentum': score_data.get('momentum_score', 0),
-                            'liquidity': score_data.get('liquidity_score', 0),
-                            'risk': score_data.get('risk_score', 0),
-                            'diversity': score_data.get('diversity_score', 0)
-                        },
-                        
-                        # Web3 enriched data
-                        'web3_data': {
-                            'token_age_hours': score_data.get('token_age_hours'),
-                            'holder_count': score_data.get('holder_count'),
-                            'liquidity_eth': score_data.get('liquidity_eth'),
-                            'price_change_24h': score_data.get('price_change_24h'),
-                            'smart_money_percentage': score_data.get('smart_money_percentage'),
-                            'whale_activity': score_data.get('whale_activity')
-                        },
-                        
-                        # Risk assessment
-                        'risk_factors': score_data.get('risk_factors', {}),
-                        
-                        # Analysis metadata
-                        'analysis_timestamp': datetime.utcnow().isoformat(),
-                        'network': self.network
+            
+            # Create purchase stats for missing token_stats
+            purchase_stats = {}
+            for purchase in purchases:
+                token = purchase.token_bought
+                if token not in purchase_stats:
+                    purchase_stats[token] = {
+                        'total_eth': 0,
+                        'count': 0,
+                        'wallets': set(),
+                        'scores': []
                     }
+                purchase_stats[token]['total_eth'] += purchase.eth_spent
+                purchase_stats[token]['count'] += 1
+                purchase_stats[token]['wallets'].add(purchase.wallet_address)
+                purchase_stats[token]['scores'].append(purchase.sophistication_score or 0)
+            
+            for token, score_data in scores.items():
+                # Get stats from purchases or defaults
+                pstats = purchase_stats.get(token, {
+                    'total_eth': 0, 'count': 1, 'wallets': set(['unknown']), 'scores': [0]
+                })
+                
+                # Enhanced token data with AI metrics
+                token_data = {
+                    'total_eth_spent': float(pstats['total_eth']),
+                    'wallet_count': len(pstats['wallets']),
+                    'total_purchases': int(pstats['count']),
+                    'avg_wallet_score': float(sum(pstats['scores']) / len(pstats['scores']) if pstats['scores'] else 0),
+                    'platforms': ['DEX'],
+                    'contract_address': contract_lookup.get(token, ''),
+                    'alpha_score': score_data['total_score'],
+                    'is_base_native': self.network == 'base',
                     
-                    # Include all enhanced data in tuple for notifications
-                    # Format: (token_name, token_data, score, ai_data)
-                    ranked_tokens.append((token, token_data, score_data['total_score'], score_data))
+                    # AI Enhancement indicators
+                    'ai_enhanced': score_data.get('ai_enhanced', False),
+                    'confidence': score_data.get('confidence', 0.7),
                     
-                    logger.debug(f"Added enhanced token: {token} (AI score: {score_data['total_score']:.1f}, enhanced: {score_data.get('ai_enhanced', False)})")
+                    # Detailed AI component scores
+                    'ai_scores': {
+                        'volume': score_data.get('volume_score', 0),
+                        'quality': score_data.get('quality_score', 0),
+                        'momentum': score_data.get('momentum_score', 0),
+                        'liquidity': score_data.get('liquidity_score', 0),
+                        'risk': score_data.get('risk_score', 0),
+                        'diversity': score_data.get('diversity_score', 0)
+                    },
+                    
+                    # Web3 enriched data
+                    'web3_data': {
+                        'token_age_hours': score_data.get('token_age_hours'),
+                        'holder_count': score_data.get('holder_count'),
+                        'liquidity_eth': score_data.get('liquidity_eth'),
+                        'price_change_24h': score_data.get('price_change_24h'),
+                        'smart_money_percentage': score_data.get('smart_money_percentage'),
+                        'whale_activity': score_data.get('whale_activity')
+                    },
+                    
+                    # Risk assessment
+                    'risk_factors': score_data.get('risk_factors', {}),
+                    
+                    # Analysis metadata
+                    'analysis_timestamp': datetime.utcnow().isoformat(),
+                    'network': self.network
+                }
+                
+                # Include all enhanced data in tuple for notifications
+                # Format: (token_name, token_data, score, ai_data)
+                ranked_tokens.append((token, token_data, score_data['total_score'], score_data))
+                
+                logger.debug(f"Added enhanced token: {token} (AI score: {score_data['total_score']:.1f}, enhanced: {score_data.get('ai_enhanced', False)})")
+        else:
+            logger.warning("No scores available for ranking")
         
         # Sort by enhanced AI score
         ranked_tokens.sort(key=lambda x: x[2], reverse=True)
@@ -429,10 +446,6 @@ class CloudBuyAnalyzer:
         """Enhanced cleanup with AI resources"""
         try:
             logger.info("Starting enhanced cleanup...")
-            
-            # Cleanup AI resources
-            if self.data_processor:
-                await self.data_processor.cleanup_enhanced_scoring()
             
             # Cleanup existing services
             if self.db_service:

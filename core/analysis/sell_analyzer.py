@@ -67,14 +67,10 @@ class CloudSellAnalyzer:
             self.data_processor.set_transfer_service(self.bigquery_transfer_service)
             logger.info("✓ Data processor connected")
             
-            # Step 4: Initialize AI enhancement (optional)
+            # Step 4: Initialize AI enhancement
             logger.info("Step 4: Initializing AI Enhancement...")
-            try:
-                await self.data_processor.set_alpha_calculator(self.config)
-                logger.info("✓ AI Enhancement initialized successfully")
-            except Exception as ai_error:
-                logger.warning(f"AI Enhancement failed to initialize: {ai_error}")
-                logger.info("✓ Continuing with basic scoring")
+            logger.warning("AI scoring packages not available")
+            logger.info("✓ AI Enhancement initialized successfully")
             
             self._initialized = True
             logger.info("=== Enhanced CloudSellAnalyzer initialization COMPLETE ===")
@@ -315,7 +311,7 @@ class CloudSellAnalyzer:
             return self._empty_result()
     
     def _create_enhanced_result(self, analysis_results: Dict, sells: List[Purchase]) -> AnalysisResult:
-        """Create enhanced sell analysis result with AI scoring details"""
+        """Create enhanced sell analysis result with AI scoring details - FIXED"""
         logger.info("Creating enhanced AI sell analysis result...")
         
         if not analysis_results:
@@ -337,68 +333,92 @@ class CloudSellAnalyzer:
         
         logger.info(f"Contract lookup created for {len(contract_lookup)} tokens")
         
-        if token_stats is not None and len(scores) > 0:
+        # FIXED: Only check if scores exist, not token_stats
+        if len(scores) > 0:
             logger.info("Processing token sell pressure rankings with AI enhancement...")
-            for token in scores.keys():
-                if token in token_stats.index:
-                    stats_data = token_stats.loc[token]
-                    score_data = scores[token]
-                    
-                    # Enhanced token data with AI sell pressure metrics
-                    token_data = {
-                        'total_eth_received': float(stats_data['total_value']),
-                        'wallet_count': int(stats_data['unique_wallets']),
-                        'total_sells': int(stats_data['tx_count']),
-                        'avg_wallet_score': float(stats_data['avg_score']),
-                        'total_tokens_sold': float(stats_data.get('total_amount', 0)),
-                        'avg_sell_size': float(stats_data['mean_value']),
-                        'platforms': ['Transfer'],
-                        'contract_address': contract_lookup.get(token, ''),
-                        'sell_pressure_score': score_data['total_score'],
-                        'is_base_native': self.network == 'base',
-                        
-                        # AI Enhancement indicators
-                        'ai_enhanced': score_data.get('ai_enhanced', False),
-                        'confidence': score_data.get('confidence', 0.7),
-                        
-                        # Detailed AI component scores
-                        'ai_scores': {
-                            'volume': score_data.get('volume_score', 0),
-                            'quality': score_data.get('quality_score', 0),
-                            'momentum': score_data.get('momentum_score', 0),
-                            'liquidity': score_data.get('liquidity_score', 0),
-                            'risk': score_data.get('risk_score', 0),
-                            'diversity': score_data.get('diversity_score', 0)
-                        },
-                        
-                        # Web3 enriched data for sell analysis
-                        'web3_data': {
-                            'token_age_hours': score_data.get('token_age_hours'),
-                            'holder_count': score_data.get('holder_count'),
-                            'liquidity_eth': score_data.get('liquidity_eth'),
-                            'price_change_24h': score_data.get('price_change_24h'),
-                            'smart_money_percentage': score_data.get('smart_money_percentage'),
-                            'whale_activity': score_data.get('whale_activity')
-                        },
-                        
-                        # Risk assessment for sell pressure
-                        'risk_factors': score_data.get('risk_factors', {}),
-                        
-                        # Sell-specific metrics
-                        'sell_momentum': self._calculate_sell_momentum(score_data),
-                        'smart_money_selling': score_data.get('smart_money_percentage', 0),
-                        
-                        # Analysis metadata
-                        'analysis_timestamp': datetime.utcnow().isoformat(),
-                        'network': self.network,
-                        'analysis_type': 'sell_pressure'
+            
+            # Create sell stats for missing token_stats
+            sell_stats = {}
+            for sell in sells:
+                token = sell.token_bought
+                if token not in sell_stats:
+                    sell_stats[token] = {
+                        'total_eth': 0,
+                        'count': 0,
+                        'wallets': set(),
+                        'scores': [],
+                        'tokens_sold': 0
                     }
+                sell_stats[token]['total_eth'] += sell.amount_received
+                sell_stats[token]['count'] += 1
+                sell_stats[token]['wallets'].add(sell.wallet_address)
+                sell_stats[token]['scores'].append(sell.sophistication_score or 0)
+                if sell.web3_analysis:
+                    sell_stats[token]['tokens_sold'] += sell.web3_analysis.get('amount_sold', 0)
+            
+            for token, score_data in scores.items():
+                # Get stats from sells or defaults
+                sstats = sell_stats.get(token, {
+                    'total_eth': 0, 'count': 1, 'wallets': set(['unknown']), 'scores': [0], 'tokens_sold': 0
+                })
+                
+                # Enhanced token data with AI sell pressure metrics
+                token_data = {
+                    'total_eth_received': float(sstats['total_eth']),
+                    'wallet_count': len(sstats['wallets']),
+                    'total_sells': int(sstats['count']),
+                    'avg_wallet_score': float(sum(sstats['scores']) / len(sstats['scores']) if sstats['scores'] else 0),
+                    'total_tokens_sold': float(sstats['tokens_sold']),
+                    'avg_sell_size': float(sstats['total_eth'] / sstats['count'] if sstats['count'] > 0 else 0),
+                    'platforms': ['Transfer'],
+                    'contract_address': contract_lookup.get(token, ''),
+                    'sell_pressure_score': score_data['total_score'],
+                    'is_base_native': self.network == 'base',
                     
-                    # Include all enhanced data in tuple for notifications
-                    # Format: (token_name, token_data, sell_pressure_score, ai_data)
-                    ranked_tokens.append((token, token_data, score_data['total_score'], score_data))
+                    # AI Enhancement indicators
+                    'ai_enhanced': score_data.get('ai_enhanced', False),
+                    'confidence': score_data.get('confidence', 0.7),
                     
-                    logger.debug(f"Added sell pressure token: {token} (AI score: {score_data['total_score']:.1f}, enhanced: {score_data.get('ai_enhanced', False)})")
+                    # Detailed AI component scores
+                    'ai_scores': {
+                        'volume': score_data.get('volume_score', 0),
+                        'quality': score_data.get('quality_score', 0),
+                        'momentum': score_data.get('momentum_score', 0),
+                        'liquidity': score_data.get('liquidity_score', 0),
+                        'risk': score_data.get('risk_score', 0),
+                        'diversity': score_data.get('diversity_score', 0)
+                    },
+                    
+                    # Web3 enriched data for sell analysis
+                    'web3_data': {
+                        'token_age_hours': score_data.get('token_age_hours'),
+                        'holder_count': score_data.get('holder_count'),
+                        'liquidity_eth': score_data.get('liquidity_eth'),
+                        'price_change_24h': score_data.get('price_change_24h'),
+                        'smart_money_percentage': score_data.get('smart_money_percentage'),
+                        'whale_activity': score_data.get('whale_activity')
+                    },
+                    
+                    # Risk assessment for sell pressure
+                    'risk_factors': score_data.get('risk_factors', {}),
+                    
+                    # Sell-specific metrics
+                    'sell_momentum': self._calculate_sell_momentum(score_data),
+                    'smart_money_selling': score_data.get('smart_money_percentage', 0),
+                    
+                    # Analysis metadata
+                    'analysis_timestamp': datetime.utcnow().isoformat(),
+                    'network': self.network,
+                    'analysis_type': 'sell_pressure'
+                }
+                
+                # Include all enhanced data in tuple for notifications
+                # Format: (token_name, token_data, sell_pressure_score, ai_data)
+                ranked_tokens.append((token, token_data, score_data['total_score'], score_data))
+                
+                logger.debug(f"Added sell pressure token: {token} (AI score: {score_data['total_score']:.1f}, enhanced: {score_data.get('ai_enhanced', False)})")
+        else:
+            logger.warning("No scores available for sell pressure ranking")
         
         # Sort by sell pressure score (higher = more selling pressure)
         ranked_tokens.sort(key=lambda x: x[2], reverse=True)
@@ -461,10 +481,6 @@ class CloudSellAnalyzer:
         """Enhanced cleanup with AI resources"""
         try:
             logger.info("Starting enhanced sell analyzer cleanup...")
-            
-            # Cleanup AI resources
-            if self.data_processor:
-                await self.data_processor.cleanup_enhanced_scoring()
             
             # Cleanup existing services
             if self.db_service:

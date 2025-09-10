@@ -16,7 +16,7 @@ from utils.config import Config
 logger = logging.getLogger(__name__)
 
 class CloudSellAnalyzer:
-    """Enhanced Cloud-optimized Sell analyzer with AI-powered alpha scoring"""
+    """Enhanced Cloud-optimized Sell analyzer with AI-powered alpha scoring and optional storage"""
     
     def __init__(self, network: str):
         self.network = network
@@ -83,14 +83,16 @@ class CloudSellAnalyzer:
             self._initialized = False
             raise
     
-    async def analyze(self, num_wallets: int, days_back: float) -> AnalysisResult:
-        """Enhanced sell analysis with AI-powered alpha scoring"""
+    async def analyze(self, num_wallets: int, days_back: float, store_data: bool = False) -> AnalysisResult:
+        """Enhanced sell analysis with AI-powered alpha scoring and optional storage"""
         start_time = time.time()
         
         try:
+            storage_status = "ENABLED" if store_data else "DISABLED"
             logger.info("=" * 60)
             logger.info(f"STARTING ENHANCED AI SELL ANALYSIS FOR {self.network.upper()}")
             logger.info(f"Parameters: {num_wallets} wallets, {days_back} days back")
+            logger.info(f"🗄️ Data Storage: {storage_status}")
             logger.info("🤖 AI-Enhanced Sell Pressure Analysis: ENABLED")
             logger.info("=" * 60)
             
@@ -170,12 +172,14 @@ class CloudSellAnalyzer:
             
             self.stats["transfers_processed"] = total_transfers
             
-            # Step 5: Process transfers to sells
+            # Step 5: Process transfers to sells WITH OPTIONAL STORAGE
             logger.info("STEP 4: Processing transfers to identify sells...")
+            logger.info(f"🗄️ Storage mode: {storage_status}")
             step_start = time.time()
             
+            # PASS THE STORE_DATA FLAG TO THE PROCESSOR
             sells = await self.data_processor.process_transfers_to_sells(
-                wallets, all_transfers, self.network
+                wallets, all_transfers, self.network, store_data=store_data
             )
             
             process_time = time.time() - step_start
@@ -283,14 +287,16 @@ class CloudSellAnalyzer:
             logger.info("STEP 6: Creating enhanced sell result...")
             result = self._create_enhanced_result(analysis_results, sells)
             
-            # Final summary with AI enhancement info
+            # Final summary with AI enhancement info and storage status
+            storage_msg = f"Transfers stored to BigQuery: {self.stats['transfers_stored']}" if store_data else "No data stored (store_data=False)"
+            
             logger.info("=" * 60)
             logger.info("🤖 ENHANCED AI SELL ANALYSIS COMPLETE!")
             logger.info(f"Total time: {self.stats['analysis_time']:.2f}s")
             logger.info(f"Sell transactions: {result.total_transactions}")
             logger.info(f"Unique tokens under pressure: {result.unique_tokens}")
             logger.info(f"Total ETH received from sells: {result.total_eth_value:.4f}")
-            logger.info(f"Transfers stored to BigQuery: {self.stats['transfers_stored']}")
+            logger.info(f"🗄️ {storage_msg}")
             logger.info(f"AI-enhanced tokens: {self.stats['ai_enhanced_tokens']}")
             if self.stats['ai_enhanced_tokens'] > 0:
                 logger.info(f"Average AI confidence: {self.stats['ai_confidence_avg']:.2f}")

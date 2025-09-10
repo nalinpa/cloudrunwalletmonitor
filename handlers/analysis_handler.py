@@ -62,12 +62,19 @@ class AnalysisHandler:
             requested_days_back = float(request_data.get('days_back', 1.0))
             use_smart_timing = request_data.get('smart_timing', True)
             
+            # NEW: Store data flag - defaults to FALSE (no storage)
+            store_data = request_data.get('store_data', False)
+            
             debug_mode = request_data.get('debug', False)
             
             # Notification settings
             send_notifications = request_data.get('notifications', True)
             max_tokens = int(request_data.get('max_tokens', 7))
             min_alpha_score = float(request_data.get('min_alpha_score', 50.0))
+            
+            # Log the storage decision
+            storage_status = "ENABLED" if store_data else "DISABLED"
+            logger.info(f"Transfer data storage: {storage_status}")
             
             # Calculate smart days_back
             if use_smart_timing and self.last_run_tracker and self.last_run_tracker.is_available():
@@ -79,7 +86,7 @@ class AnalysisHandler:
                 days_back = requested_days_back
                 logger.info(f"Manual timing: Using {days_back} days back")
             
-            logger.info(f"Enhanced analysis params: {network} {analysis_type}, {num_wallets} wallets, {days_back} days")
+            logger.info(f"Enhanced analysis params: {network} {analysis_type}, {num_wallets} wallets, {days_back} days, store_data={store_data}")
             
             # Validate parameters
             validation_error = self._validate_parameters(network, analysis_type)
@@ -95,7 +102,7 @@ class AnalysisHandler:
             # Build debug info
             debug_info = self._build_debug_info(
                 network, analysis_type, num_wallets, requested_days_back, days_back,
-                use_smart_timing, max_tokens, min_alpha_score, telegram_status
+                use_smart_timing, max_tokens, min_alpha_score, telegram_status, store_data
             )
             
             # Return early if debug mode
@@ -106,23 +113,26 @@ class AnalysisHandler:
             if send_notifications and telegram_status and telegram_status.get('ready_for_notifications'):
                 await telegram_service.send_start_notification(
                     network, analysis_type, num_wallets, days_back, 
-                    use_smart_timing, max_tokens, min_alpha_score
+                    use_smart_timing, max_tokens, min_alpha_score, store_data
                 )
             
-            # Run analysis
+            # Run analysis with store_data flag
             try:
                 logger.info(f"Starting enhanced {analysis_type} analysis for {network}")
                 analyzer = await self.get_analyzer(network, analysis_type)
-                result = await analyzer.analyze(num_wallets, days_back)
+                
+                # Pass the store_data flag to the analyzer
+                result = await analyzer.analyze(num_wallets, days_back, store_data=store_data)
                 
                 # Record successful run
                 if self.last_run_tracker and self.last_run_tracker.is_available():
                     await self.last_run_tracker.record_run(network, analysis_type, days_back, "success")
                 
                 # Build result
-                result_dict = self._build_success_result(result, days_back, use_smart_timing, debug_info)
+                result_dict = self._build_success_result(result, days_back, use_smart_timing, debug_info, store_data)
                 
-                logger.info(f"Enhanced analysis complete - {result.total_transactions} transactions, {result.unique_tokens} tokens")
+                storage_msg = f", stored {result.performance_metrics.get('transfers_stored', 0)} transfers" if store_data else ", no data stored"
+                logger.info(f"Enhanced analysis complete - {result.total_transactions} transactions, {result.unique_tokens} tokens{storage_msg}")
                 
                 # Send notifications
                 if send_notifications and telegram_status and telegram_status.get('ready_for_notifications'):
@@ -179,7 +189,7 @@ class AnalysisHandler:
     def _build_debug_info(self, network: str, analysis_type: str, num_wallets: int,
                          requested_days_back: float, actual_days_back: float,
                          use_smart_timing: bool, max_tokens: int, min_alpha_score: float,
-                         telegram_status: Dict) -> Dict:
+                         telegram_status: Dict, store_data: bool) -> Dict:
         """Build debug information"""
         return {
             'config_validation': 'passed',
@@ -191,14 +201,16 @@ class AnalysisHandler:
                 'actual_days_back': actual_days_back,
                 'smart_timing_enabled': use_smart_timing,
                 'max_tokens': max_tokens,
-                'min_alpha_score': min_alpha_score
+                'min_alpha_score': min_alpha_score,
+                'store_data': store_data  # NEW: Include storage flag in debug
             },
             'telegram_status': telegram_status,
             'notifications_enabled': telegram_service.is_configured(),
             'bigquery_configured': bool(self.config.bigquery_project_id),
             'alchemy_configured': bool(self.config.alchemy_api_key),
             'ai_enhancement': 'pandas-ta_available',
-            'last_run_tracking': self.last_run_tracker and self.last_run_tracker.is_available()
+            'last_run_tracking': self.last_run_tracker and self.last_run_tracker.is_available(),
+            'storage_enabled': store_data  # NEW: Storage status in debug
         }
     
     async def _handle_debug_mode(self, debug_info: Dict) -> Dict[str, Any]:
@@ -215,7 +227,8 @@ class AnalysisHandler:
             'success': True
         }
     
-    def _build_success_result(self, result, days_back: float, use_smart_timing: bool, debug_info: Dict) -> Dict[str, Any]:
+    def _build_success_result(self, result, days_back: float, use_smart_timing: bool, 
+                             debug_info: Dict, store_data: bool) -> Dict[str, Any]:
         """Build successful analysis result"""
         return {
             'network': result.network,
@@ -230,6 +243,8 @@ class AnalysisHandler:
             'ai_enhancement': 'pandas-ta',
             'days_back_used': days_back,
             'smart_timing_used': use_smart_timing,
+            'data_stored': store_data,  # NEW: Include storage status in response
+            'transfers_stored': result.performance_metrics.get('transfers_stored', 0) if store_data else 0,
             'debug_info': debug_info
         }
     

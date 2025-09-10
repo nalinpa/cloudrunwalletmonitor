@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import logging
-from typing import List, Dict
+from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 from api.models.data_models import WalletInfo, Purchase, Transfer, TransferType
 from services.database.bigquery_client import BigQueryTransferService
@@ -17,11 +17,10 @@ except ImportError as e:
     AI_COMPLETE = False
     print(f"⚠️ Advanced AI not available: {e}")
 
-# REMOVED: Deprecated calculator imports - using direct AI analysis instead
 AI_SCORING_AVAILABLE = AI_COMPLETE
 
 class DataProcessor:
-    """Enhanced data processor with AI-powered alpha scoring and improved sell detection"""
+    """Enhanced data processor with AI-powered alpha scoring and optional storage"""
     
     def __init__(self):
         # Token exclusion lists
@@ -56,8 +55,6 @@ class DataProcessor:
         """Set the BigQuery transfer service for database operations"""
         self.bigquery_transfer_service = transfer_service
     
-    # REMOVED: set_alpha_calculator method - no longer needed
-    
     def is_excluded_token(self, asset: str, contract_address: str = None) -> bool:
         """Check if token should be excluded"""
         if not asset:
@@ -76,13 +73,15 @@ class DataProcessor:
         return False
     
     async def process_transfers_to_purchases(self, wallets: List[WalletInfo], 
-                                           all_transfers: Dict, network: str) -> List[Purchase]:
-        """Process transfers to identify BUY transactions - KEEP YOUR EXISTING WORKING LOGIC"""
+                                           all_transfers: Dict, network: str,
+                                           store_data: bool = False) -> List[Purchase]:
+        """Process transfers to identify BUY transactions with optional storage"""
         purchases = []
         all_transfer_records = []
         wallet_scores = {w.address: w.score for w in wallets}
         
-        logger.info(f"Processing transfers for BUY analysis on {network}")
+        storage_status = "ENABLED" if store_data else "DISABLED"
+        logger.info(f"Processing transfers for BUY analysis on {network} (Storage: {storage_status})")
         
         for wallet in wallets:
             address = wallet.address
@@ -106,27 +105,28 @@ class DataProcessor:
                     if not asset or asset == "ETH" or amount <= 0:
                         continue
                     
-                    # Calculate ETH spent for this purchase - USE YOUR EXISTING METHOD
+                    # Calculate ETH spent for this purchase
                     eth_spent = self._calculate_eth_spent(outgoing, tx_hash, block_num)
                     
-                    # Create transfer record for ALL incoming ERC20 transfers
-                    transfer_record = Transfer(
-                        wallet_address=address,
-                        token_address=contract_address,
-                        transfer_type=TransferType.BUY,
-                        timestamp=self._parse_timestamp(transfer, block_number),
-                        cost_in_eth=eth_spent,
-                        transaction_hash=tx_hash,
-                        block_number=block_number,
-                        token_amount=amount,
-                        token_symbol=asset,
-                        network=network,
-                        platform="DEX",
-                        wallet_sophistication_score=wallet_scores.get(address, 0)
-                    )
-                    all_transfer_records.append(transfer_record)
+                    # Create transfer record for ALL incoming ERC20 transfers (conditionally stored)
+                    if store_data:
+                        transfer_record = Transfer(
+                            wallet_address=address,
+                            token_address=contract_address,
+                            transfer_type=TransferType.BUY,
+                            timestamp=self._parse_timestamp(transfer, block_number),
+                            cost_in_eth=eth_spent,
+                            transaction_hash=tx_hash,
+                            block_number=block_number,
+                            token_amount=amount,
+                            token_symbol=asset,
+                            network=network,
+                            platform="DEX",
+                            wallet_sophistication_score=wallet_scores.get(address, 0)
+                        )
+                        all_transfer_records.append(transfer_record)
                     
-                    # LOWERED THRESHOLD FOR TESTING - USE YOUR WORKING THRESHOLD
+                    # Create purchase for analysis (always done regardless of storage)
                     if not self.is_excluded_token(asset, contract_address) and eth_spent >= 0.00001:
                         purchase = Purchase(
                             transaction_hash=tx_hash,
@@ -136,7 +136,7 @@ class DataProcessor:
                             wallet_address=address,
                             platform="DEX",
                             block_number=block_number,
-                            timestamp=transfer_record.timestamp,
+                            timestamp=self._parse_timestamp(transfer, block_number),
                             sophistication_score=wallet_scores.get(address, 0),
                             web3_analysis={"contract_address": contract_address}
                         )
@@ -146,7 +146,7 @@ class DataProcessor:
                     logger.debug(f"Error processing incoming transfer: {e}")
                     continue
             
-            # Process OUTGOING transfers for completeness
+            # Process OUTGOING transfers for completeness (conditionally stored)
             for transfer in outgoing:
                 try:
                     asset = transfer.get("asset")
@@ -164,48 +164,57 @@ class DataProcessor:
                     # Calculate ETH received for sells
                     eth_received = self._calculate_eth_received(incoming, tx_hash, block_num)
                     
-                    # Create transfer record for ALL outgoing ERC20 transfers
-                    transfer_record = Transfer(
-                        wallet_address=address,
-                        token_address=contract_address,
-                        transfer_type=TransferType.SELL,
-                        timestamp=self._parse_timestamp(transfer, block_number),
-                        cost_in_eth=eth_received,
-                        transaction_hash=tx_hash,
-                        block_number=block_number,
-                        token_amount=amount,
-                        token_symbol=asset,
-                        network=network,
-                        platform="Transfer",
-                        wallet_sophistication_score=wallet_scores.get(address, 0)
-                    )
-                    all_transfer_records.append(transfer_record)
+                    # Create transfer record for ALL outgoing ERC20 transfers (conditionally stored)
+                    if store_data:
+                        transfer_record = Transfer(
+                            wallet_address=address,
+                            token_address=contract_address,
+                            transfer_type=TransferType.SELL,
+                            timestamp=self._parse_timestamp(transfer, block_number),
+                            cost_in_eth=eth_received,
+                            transaction_hash=tx_hash,
+                            block_number=block_number,
+                            token_amount=amount,
+                            token_symbol=asset,
+                            network=network,
+                            platform="Transfer",
+                            wallet_sophistication_score=wallet_scores.get(address, 0)
+                        )
+                        all_transfer_records.append(transfer_record)
                     
                 except Exception as e:
                     logger.debug(f"Error processing outgoing transfer: {e}")
                     continue
         
-        # Store all transfers to BigQuery
-        if self.bigquery_transfer_service and all_transfer_records:
+        # Store all transfers to BigQuery ONLY if store_data is True
+        if store_data and self.bigquery_transfer_service and all_transfer_records:
             try:
                 stored_count = await self.bigquery_transfer_service.store_transfers_batch(all_transfer_records)
                 self._last_stored_count = stored_count
-                logger.info(f"Stored {stored_count} transfer records to BigQuery")
+                logger.info(f"✅ STORED {stored_count} transfer records to BigQuery")
             except Exception as e:
-                logger.error(f"Failed to store transfer records to BigQuery: {e}")
+                logger.error(f"❌ Failed to store transfer records to BigQuery: {e}")
                 self._last_stored_count = 0
+        elif store_data:
+            logger.warning("⚠️ Storage requested but no transfer service available or no records")
+            self._last_stored_count = 0
+        else:
+            logger.info(f"📊 STORAGE SKIPPED - store_data=False (analyzed {len(all_transfer_records)} transfer records)")
+            self._last_stored_count = 0
         
         logger.info(f"BUY: Created {len(purchases)} purchases from {len(all_transfer_records)} total transfers")
         return purchases
     
     async def process_transfers_to_sells(self, wallets: List[WalletInfo], 
-                                       all_transfers: Dict, network: str) -> List[Purchase]:
-        """Process transfers to identify SELL transactions - ENHANCED for better detection"""
+                                       all_transfers: Dict, network: str,
+                                       store_data: bool = False) -> List[Purchase]:
+        """Process transfers to identify SELL transactions with optional storage"""
         sells = []
         all_transfer_records = []
         wallet_scores = {w.address: w.score for w in wallets}
         
-        logger.info(f"Processing transfers for SELL analysis on {network}")
+        storage_status = "ENABLED" if store_data else "DISABLED"
+        logger.info(f"Processing transfers for SELL analysis on {network} (Storage: {storage_status})")
         
         for wallet in wallets:
             address = wallet.address
@@ -229,27 +238,28 @@ class DataProcessor:
                     if not asset or asset == "ETH" or amount_sold <= 0:
                         continue
                     
-                    # Calculate ETH received from sell - ENHANCED METHOD
+                    # Calculate ETH received from sell
                     eth_received = self._calculate_eth_received(incoming, tx_hash, block_num)
                     
-                    # Create transfer record for ALL outgoing ERC20 transfers
-                    transfer_record = Transfer(
-                        wallet_address=address,
-                        token_address=contract_address,
-                        transfer_type=TransferType.SELL,
-                        timestamp=self._parse_timestamp(transfer, block_number),
-                        cost_in_eth=eth_received,
-                        transaction_hash=tx_hash,
-                        block_number=block_number,
-                        token_amount=amount_sold,
-                        token_symbol=asset,
-                        network=network,
-                        platform="Transfer",
-                        wallet_sophistication_score=wallet_scores.get(address, 0)
-                    )
-                    all_transfer_records.append(transfer_record)
+                    # Create transfer record for ALL outgoing ERC20 transfers (conditionally stored)
+                    if store_data:
+                        transfer_record = Transfer(
+                            wallet_address=address,
+                            token_address=contract_address,
+                            transfer_type=TransferType.SELL,
+                            timestamp=self._parse_timestamp(transfer, block_number),
+                            cost_in_eth=eth_received,
+                            transaction_hash=tx_hash,
+                            block_number=block_number,
+                            token_amount=amount_sold,
+                            token_symbol=asset,
+                            network=network,
+                            platform="Transfer",
+                            wallet_sophistication_score=wallet_scores.get(address, 0)
+                        )
+                        all_transfer_records.append(transfer_record)
                     
-                    # LOWERED THRESHOLD to catch more sells
+                    # Create sell for analysis (always done regardless of storage)
                     if not self.is_excluded_token(asset, contract_address) and eth_received >= 0.000001:
                         sell = Purchase(
                             transaction_hash=tx_hash,
@@ -259,7 +269,7 @@ class DataProcessor:
                             wallet_address=address,
                             platform="Transfer",
                             block_number=block_number,
-                            timestamp=transfer_record.timestamp,
+                            timestamp=self._parse_timestamp(transfer, block_number),
                             sophistication_score=wallet_scores.get(address, 0),
                             web3_analysis={
                                 "contract_address": contract_address,
@@ -276,7 +286,7 @@ class DataProcessor:
                     logger.debug(f"Error processing sell transfer: {e}")
                     continue
             
-            # Also process incoming transfers for completeness
+            # Also process incoming transfers for completeness (conditionally stored)
             for transfer in incoming:
                 try:
                     asset = transfer.get("asset")
@@ -294,36 +304,43 @@ class DataProcessor:
                     # Calculate ETH cost for this transaction
                     eth_spent = self._calculate_eth_spent(outgoing, tx_hash, block_num)
                     
-                    # Create transfer record for ALL incoming ERC20 transfers
-                    transfer_record = Transfer(
-                        wallet_address=address,
-                        token_address=contract_address,
-                        transfer_type=TransferType.BUY,
-                        timestamp=self._parse_timestamp(transfer, block_number),
-                        cost_in_eth=eth_spent,
-                        transaction_hash=tx_hash,
-                        block_number=block_number,
-                        token_amount=amount,
-                        token_symbol=asset,
-                        network=network,
-                        platform="DEX",
-                        wallet_sophistication_score=wallet_scores.get(address, 0)
-                    )
-                    all_transfer_records.append(transfer_record)
+                    # Create transfer record for ALL incoming ERC20 transfers (conditionally stored)
+                    if store_data:
+                        transfer_record = Transfer(
+                            wallet_address=address,
+                            token_address=contract_address,
+                            transfer_type=TransferType.BUY,
+                            timestamp=self._parse_timestamp(transfer, block_number),
+                            cost_in_eth=eth_spent,
+                            transaction_hash=tx_hash,
+                            block_number=block_number,
+                            token_amount=amount,
+                            token_symbol=asset,
+                            network=network,
+                            platform="DEX",
+                            wallet_sophistication_score=wallet_scores.get(address, 0)
+                        )
+                        all_transfer_records.append(transfer_record)
                     
                 except Exception as e:
                     logger.debug(f"Error processing incoming transfer in sell analysis: {e}")
                     continue
         
-        # Store all transfers to BigQuery
-        if self.bigquery_transfer_service and all_transfer_records:
+        # Store all transfers to BigQuery ONLY if store_data is True
+        if store_data and self.bigquery_transfer_service and all_transfer_records:
             try:
                 stored_count = await self.bigquery_transfer_service.store_transfers_batch(all_transfer_records)
                 self._last_stored_count = stored_count
-                logger.info(f"Stored {stored_count} transfer records to BigQuery")
+                logger.info(f"✅ STORED {stored_count} transfer records to BigQuery")
             except Exception as e:
-                logger.error(f"Failed to store transfer records to BigQuery: {e}")
+                logger.error(f"❌ Failed to store transfer records to BigQuery: {e}")
                 self._last_stored_count = 0
+        elif store_data:
+            logger.warning("⚠️ Storage requested but no transfer service available or no records")
+            self._last_stored_count = 0
+        else:
+            logger.info(f"📊 STORAGE SKIPPED - store_data=False (analyzed {len(all_transfer_records)} transfer records)")
+            self._last_stored_count = 0
         
         logger.info(f"SELL: Created {len(sells)} sells from {len(all_transfer_records)} total transfers")
         
@@ -343,6 +360,7 @@ class DataProcessor:
         
         return sells
     
+    # Keep all your existing helper methods unchanged...
     def _parse_timestamp(self, transfer: Dict, block_number: int = None) -> datetime:
         """Parse timestamp from transfer data or estimate from block"""
         # Try to get timestamp from transfer metadata
@@ -744,8 +762,6 @@ class DataProcessor:
         
         return "\n".join(insights)
     
-    # REMOVED: _calculate_enhanced_scores method - deprecated calculator logic
-    
     def _get_contract_address(self, token_purchases: List[Purchase]) -> str:
         """Extract contract address from purchases"""
         for purchase in token_purchases:
@@ -760,8 +776,6 @@ class DataProcessor:
         # Try to get from transfer records or use default
         # You can enhance this based on your data structure
         return "ethereum"  # Default fallback
-    
-    # REMOVED: cleanup_enhanced_scoring method - no longer needed
     
     # Additional utility methods for debugging and monitoring
     

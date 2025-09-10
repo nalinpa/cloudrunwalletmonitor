@@ -1,3 +1,5 @@
+# services/notifications/notifications.py - Updated with storage status notifications
+
 """
 Unified Telegram Notification Service
 Combines existing TelegramClient with enhanced notification features
@@ -295,13 +297,21 @@ class TelegramService:
                     await self.send_message(message.strip())
                     await asyncio.sleep(1.5)  # Rate limiting
                 
-                # Send summary
+                # Send summary with storage info
+                storage_info = ""
+                if hasattr(result, 'performance_metrics'):
+                    transfers_stored = result.performance_metrics.get('transfers_stored', 0)
+                    if transfers_stored > 0:
+                        storage_info = f"\n🗄️ **Stored:** {transfers_stored} transfer records"
+                    else:
+                        storage_info = f"\n🗄️ **Storage:** Disabled (no data stored)"
+                
                 summary_message = f"""📊 **{result.analysis_type.upper()} ANALYSIS SUMMARY**
 
 ✅ **Alerts Sent:** {len(limited_tokens)}
 📈 **Total Tokens Found:** {result.unique_tokens}
 💰 **Total ETH Volume:** {result.total_eth_value:.4f}
-🔍 **Filtering:** min score {min_alpha_score}, max {max_tokens} tokens
+🔍 **Filtering:** min score {min_alpha_score}, max {max_tokens} tokens{storage_info}
 
 🌐 **Network:** {network.upper()}
 ⏰ {datetime.now().strftime('%H:%M:%S')}"""
@@ -312,12 +322,22 @@ class TelegramService:
             else:
                 # No qualifying tokens
                 max_score = max([t[2] for t in result.ranked_tokens[:3]]) if result.ranked_tokens else 0
+                
+                # Check storage status
+                storage_info = ""
+                if hasattr(result, 'performance_metrics'):
+                    transfers_stored = result.performance_metrics.get('transfers_stored', 0)
+                    if transfers_stored > 0:
+                        storage_info = f"\n🗄️ **Stored:** {transfers_stored} records"
+                    else:
+                        storage_info = f"\n🗄️ **Storage:** Disabled"
+                
                 message = f"""📊 **{result.analysis_type.upper()} ANALYSIS - NO ALERTS**
 
 🌐 **Network:** {network.upper()}
 📊 **Tokens Found:** {result.unique_tokens}
 🚫 **Above {min_alpha_score} Score:** 0
-📈 **Highest Score:** {max_score:.1f}
+📈 **Highest Score:** {max_score:.1f}{storage_info}
 
 💡 **Tip:** Lower min_alpha_score to see more alerts
 ⏰ {datetime.now().strftime('%H:%M:%S')}"""
@@ -331,9 +351,10 @@ class TelegramService:
     
     async def send_start_notification(self, network: str, analysis_type: str, num_wallets: int, 
                                     days_back: float, use_smart_timing: bool, max_tokens: int, 
-                                    min_alpha_score: float):
-        """Send analysis start notification"""
+                                    min_alpha_score: float, store_data: bool = False):
+        """Send analysis start notification with storage status"""
         timing_info = f"⏰ Smart: {days_back}d" if use_smart_timing else f"⏰ Manual: {days_back}d"
+        storage_info = f"🗄️ Storage: {'Enabled' if store_data else 'Disabled'}"
         
         start_message = f"""🚀 **ENHANCED ANALYSIS STARTED**
 
@@ -341,6 +362,7 @@ class TelegramService:
 **Type:** {analysis_type.capitalize()}
 **Wallets:** {num_wallets}
 {timing_info}
+{storage_info}
 **AI Enhancement:** pandas-ta Enabled
 **Filters:** max {max_tokens} tokens, ≥{min_alpha_score} score
 

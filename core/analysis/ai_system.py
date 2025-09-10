@@ -3,7 +3,6 @@ import numpy as np
 from sklearn.ensemble import IsolationForest
 from sklearn.cluster import DBSCAN
 from sklearn.preprocessing import StandardScaler
-import pandas_ta as ta 
 from textblob import TextBlob
 import asyncio
 import logging
@@ -13,7 +12,7 @@ from datetime import datetime, timedelta
 logger = logging.getLogger(__name__)
 
 class AdvancedCryptoAI:
-    """COMPLETE AI system with pandas-ta support for Cloud Run"""
+    """Simplified AI system without pandas-ta - ML + Sentiment only"""
     
     def __init__(self):
         # Core ML models
@@ -30,7 +29,6 @@ class AdvancedCryptoAI:
             'pump_probability': 0.65,
             'anomaly_threshold': 0.3,
             'sentiment_threshold': 0.6,
-            'technical_strength': 0.5,
             'smart_money_threshold': 200
         }
         
@@ -45,12 +43,12 @@ class AdvancedCryptoAI:
             'rug', 'scam', 'dead', 'rekt', 'liquidated', 'down'
         ]
         
-        logger.info("🚀 COMPLETE AI initialized with pandas-ta + TextBlob + ML")
+        logger.info("🚀 AI initialized with ML + Sentiment Analysis (no technical indicators)")
     
     async def complete_ai_analysis(self, purchases: List, analysis_type: str) -> Dict:
-        """COMPLETE AI analysis with all features"""
+        """Complete AI analysis without technical indicators"""
         try:
-            logger.info(f"🤖 COMPLETE AI ANALYSIS: {len(purchases)} {analysis_type} transactions")
+            logger.info(f"🤖 AI ANALYSIS: {len(purchases)} {analysis_type} transactions")
             
             if not purchases:
                 return self._create_empty_result(analysis_type)
@@ -58,269 +56,108 @@ class AdvancedCryptoAI:
             # Enhanced DataFrame
             df = self._create_enhanced_dataframe(purchases)
             
-            # ALL AI ANALYSES
+            # AI ANALYSES (without technical indicators)
             analyses = {
                 'whale_coordination': self._detect_whale_coordination(df),
                 'pump_signals': self._detect_pump_signals(df),
                 'anomaly_detection': self._detect_anomalies(df),
-                'technical_indicators': self._calculate_pandas_ta_indicators(df),  # CHANGED: Use pandas-ta
                 'sentiment_analysis': await self._analyze_sentiment(df),
                 'smart_money_flow': self._analyze_smart_money_flow(df),
+                'momentum_analysis': self._analyze_basic_momentum(df),  # Simple momentum without TA
                 'risk_assessment': self._assess_risks(df)
             }
             
-            # Enhanced scoring with ALL features
-            enhanced_scores = self._create_ultimate_scores(analyses, df)
+            # Enhanced scoring without technical indicators
+            enhanced_scores = self._create_enhanced_scores(analyses, df)
             
-            # Build ultimate result
-            result = self._build_ultimate_result(analyses, enhanced_scores, analysis_type)
+            # Build result
+            result = self._build_enhanced_result(analyses, enhanced_scores, analysis_type)
             
-            logger.info(f"✅ COMPLETE AI SUCCESS: {len(enhanced_scores)} tokens with full analysis")
+            logger.info(f"✅ AI SUCCESS: {len(enhanced_scores)} tokens analyzed")
             return result
             
         except Exception as e:
-            logger.error(f"❌ Complete AI failed: {e}")
+            logger.error(f"❌ AI analysis failed: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             return self._create_empty_result(analysis_type)
     
-    def _calculate_pandas_ta_indicators(self, df: pd.DataFrame) -> Dict:
-        """FULL pandas-ta technical analysis - Cloud Run compatible!"""
-        if df.empty or len(df) < 20:
-            return {'indicators': {}, 'signals': {}, 'strength': 0}
+    def _analyze_basic_momentum(self, df: pd.DataFrame) -> Dict:
+        """Basic momentum analysis without technical indicators"""
+        if df.empty or len(df) < 5:
+            return {'momentum_detected': False, 'strength': 0}
         
         try:
-            indicators = {}
-            signals = {}
+            momentum_signals = {}
             
             for token, token_df in df.groupby('token'):
-                if len(token_df) < 14:
+                if len(token_df) < 3:
                     continue
                 
-                # Sort by time and create price series
+                # Sort by time
                 token_df = token_df.sort_values('unix_time').reset_index(drop=True)
                 
-                # Create DataFrame for pandas-ta (requires OHLCV format)
-                price_data = pd.DataFrame({
-                    'close': token_df['eth_value'].astype(float),
-                    'high': token_df['eth_value'].astype(float),  # Using close as proxy
-                    'low': token_df['eth_value'].astype(float),   # Using close as proxy
-                    'open': token_df['eth_value'].astype(float),  # Using close as proxy
-                    'volume': token_df['amount'].astype(float)
-                })
+                # Simple momentum indicators
+                token_momentum = {}
                 
-                token_indicators = {}
-                token_signals = {}
+                # Volume acceleration
+                mid_point = len(token_df) // 2
+                early_volume = token_df.iloc[:mid_point]['eth_value'].sum()
+                recent_volume = token_df.iloc[mid_point:]['eth_value'].sum()
+                volume_acceleration = recent_volume / early_volume if early_volume > 0 else 1
+                token_momentum['volume_acceleration'] = volume_acceleration
                 
-                # RSI (14-period)
-                if len(price_data) >= 14:
-                    rsi = ta.rsi(price_data['close'], length=14)
-                    if not rsi.empty and not pd.isna(rsi.iloc[-1]):
-                        rsi_val = float(rsi.iloc[-1])
-                        token_indicators['rsi'] = rsi_val
-                        if rsi_val > 70:
-                            token_signals['rsi'] = 'OVERBOUGHT'
-                        elif rsi_val < 30:
-                            token_signals['rsi'] = 'OVERSOLD'
-                        else:
-                            token_signals['rsi'] = 'NEUTRAL'
+                # Transaction frequency
+                time_span = token_df['unix_time'].max() - token_df['unix_time'].min()
+                tx_frequency = len(token_df) / max(time_span / 3600, 1)  # Transactions per hour
+                token_momentum['tx_frequency'] = tx_frequency
                 
-                # MACD
-                if len(price_data) >= 26:
-                    macd_data = ta.macd(price_data['close'])
-                    if macd_data is not None and not macd_data.empty:
-                        macd_line = macd_data[f'MACD_12_26_9']
-                        macd_signal = macd_data[f'MACDs_12_26_9']
-                        macd_hist = macd_data[f'MACDh_12_26_9']
-                        
-                        if not pd.isna(macd_line.iloc[-1]):
-                            token_indicators['macd'] = float(macd_line.iloc[-1])
-                            token_indicators['macd_signal'] = float(macd_signal.iloc[-1])
-                            token_indicators['macd_histogram'] = float(macd_hist.iloc[-1])
-                            
-                            if (macd_hist.iloc[-1] > 0 and len(macd_hist) > 1 and 
-                                macd_hist.iloc[-2] <= 0):
-                                token_signals['macd'] = 'BULLISH_CROSSOVER'
-                            elif (macd_hist.iloc[-1] < 0 and len(macd_hist) > 1 and 
-                                  macd_hist.iloc[-2] >= 0):
-                                token_signals['macd'] = 'BEARISH_CROSSOVER'
-                            else:
-                                token_signals['macd'] = 'BULLISH' if macd_hist.iloc[-1] > 0 else 'BEARISH'
+                # Wallet growth
+                early_wallets = token_df.iloc[:mid_point]['wallet'].nunique()
+                recent_wallets = token_df.iloc[mid_point:]['wallet'].nunique()
+                wallet_growth = recent_wallets / early_wallets if early_wallets > 0 else 1
+                token_momentum['wallet_growth'] = wallet_growth
                 
-                # Bollinger Bands
-                if len(price_data) >= 20:
-                    bb_data = ta.bbands(price_data['close'], length=20)
-                    if bb_data is not None and not bb_data.empty:
-                        bb_upper = bb_data[f'BBU_20_2.0']
-                        bb_middle = bb_data[f'BBM_20_2.0']
-                        bb_lower = bb_data[f'BBL_20_2.0']
-                        
-                        if not pd.isna(bb_upper.iloc[-1]):
-                            current_price = price_data['close'].iloc[-1]
-                            bb_position = ((current_price - bb_lower.iloc[-1]) / 
-                                         (bb_upper.iloc[-1] - bb_lower.iloc[-1]))
-                            token_indicators['bb_position'] = float(bb_position)
-                            
-                            if bb_position > 0.8:
-                                token_signals['bollinger'] = 'NEAR_UPPER'
-                            elif bb_position < 0.2:
-                                token_signals['bollinger'] = 'NEAR_LOWER'
-                            else:
-                                token_signals['bollinger'] = 'MIDDLE_RANGE'
-                
-                # Stochastic Oscillator
-                if len(price_data) >= 14:
-                    stoch_data = ta.stoch(price_data['high'], price_data['low'], 
-                                        price_data['close'], k=14, d=3)
-                    if stoch_data is not None and not stoch_data.empty:
-                        stoch_k = stoch_data[f'STOCHk_14_3_3']
-                        stoch_d = stoch_data[f'STOCHd_14_3_3']
-                        
-                        if not pd.isna(stoch_k.iloc[-1]):
-                            k_val = float(stoch_k.iloc[-1])
-                            token_indicators['stoch_k'] = k_val
-                            token_indicators['stoch_d'] = float(stoch_d.iloc[-1])
-                            
-                            if k_val > 80:
-                                token_signals['stochastic'] = 'OVERBOUGHT'
-                            elif k_val < 20:
-                                token_signals['stochastic'] = 'OVERSOLD'
-                            else:
-                                token_signals['stochastic'] = 'NEUTRAL'
-                
-                # Williams %R
-                if len(price_data) >= 14:
-                    willr = ta.willr(price_data['high'], price_data['low'], 
-                                   price_data['close'], length=14)
-                    if willr is not None and not willr.empty and not pd.isna(willr.iloc[-1]):
-                        willr_val = float(willr.iloc[-1])
-                        token_indicators['willr'] = willr_val
-                        if willr_val < -80:
-                            token_signals['willr'] = 'OVERSOLD'
-                        elif willr_val > -20:
-                            token_signals['willr'] = 'OVERBOUGHT'
-                        else:
-                            token_signals['willr'] = 'NEUTRAL'
-                
-                # ADX (Trend Strength)
-                if len(price_data) >= 14:
-                    adx_data = ta.adx(price_data['high'], price_data['low'], 
-                                    price_data['close'], length=14)
-                    if adx_data is not None and not adx_data.empty:
-                        adx_val = adx_data[f'ADX_14']
-                        if not pd.isna(adx_val.iloc[-1]):
-                            adx_value = float(adx_val.iloc[-1])
-                            token_indicators['adx'] = adx_value
-                            token_signals['trend_strength'] = 'STRONG' if adx_value > 25 else 'WEAK'
-                
-                # CCI (Commodity Channel Index)
-                if len(price_data) >= 14:
-                    cci = ta.cci(price_data['high'], price_data['low'], 
-                               price_data['close'], length=14)
-                    if cci is not None and not cci.empty and not pd.isna(cci.iloc[-1]):
-                        cci_val = float(cci.iloc[-1])
-                        token_indicators['cci'] = cci_val
-                        if cci_val > 100:
-                            token_signals['cci'] = 'OVERBOUGHT'
-                        elif cci_val < -100:
-                            token_signals['cci'] = 'OVERSOLD'
-                        else:
-                            token_signals['cci'] = 'NEUTRAL'
-                
-                # Moving Averages
-                if len(price_data) >= 20:
-                    sma_20 = ta.sma(price_data['close'], length=20)
-                    ema_20 = ta.ema(price_data['close'], length=20)
-                    
-                    if sma_20 is not None and not sma_20.empty and not pd.isna(sma_20.iloc[-1]):
-                        sma_val = float(sma_20.iloc[-1])
-                        token_indicators['sma_20'] = sma_val
-                        price_vs_sma = (price_data['close'].iloc[-1] / sma_val - 1) * 100
-                        token_indicators['price_vs_sma20'] = float(price_vs_sma)
-                        
-                        if price_vs_sma > 5:
-                            token_signals['sma_trend'] = 'STRONG_BULLISH'
-                        elif price_vs_sma > 0:
-                            token_signals['sma_trend'] = 'BULLISH'
-                        elif price_vs_sma < -5:
-                            token_signals['sma_trend'] = 'STRONG_BEARISH'
-                        else:
-                            token_signals['sma_trend'] = 'BEARISH'
-                    
-                    if ema_20 is not None and not ema_20.empty and not pd.isna(ema_20.iloc[-1]):
-                        token_indicators['ema_20'] = float(ema_20.iloc[-1])
-                
-                # Volume Indicators (OBV)
-                if len(price_data) >= 14 and price_data['volume'].sum() > 0:
-                    obv = ta.obv(price_data['close'], price_data['volume'])
-                    if obv is not None and not obv.empty and not pd.isna(obv.iloc[-1]):
-                        token_indicators['obv'] = float(obv.iloc[-1])
-                        
-                        # OBV trend
-                        if len(obv) >= 5:
-                            obv_trend = np.polyfit(range(5), obv.iloc[-5:].values, 1)[0]
-                            token_indicators['obv_trend'] = float(obv_trend)
-                            token_signals['volume_trend'] = 'INCREASING' if obv_trend > 0 else 'DECREASING'
-                
-                # Momentum Indicators
-                if len(price_data) >= 10:
-                    momentum = ta.mom(price_data['close'], length=10)
-                    if momentum is not None and not momentum.empty and not pd.isna(momentum.iloc[-1]):
-                        mom_val = float(momentum.iloc[-1])
-                        token_indicators['momentum'] = mom_val
-                        token_signals['momentum'] = 'BULLISH' if mom_val > 0 else 'BEARISH'
-                
-                # Rate of Change
-                if len(price_data) >= 10:
-                    roc = ta.roc(price_data['close'], length=10)
-                    if roc is not None and not roc.empty and not pd.isna(roc.iloc[-1]):
-                        roc_val = float(roc.iloc[-1])
-                        token_indicators['roc'] = roc_val
-                        if roc_val > 5:
-                            token_signals['roc'] = 'BULLISH'
-                        elif roc_val < -5:
-                            token_signals['roc'] = 'BEARISH'
-                        else:
-                            token_signals['roc'] = 'NEUTRAL'
-                
-                indicators[token] = token_indicators
-                signals[token] = token_signals
-            
-            # Calculate overall technical strength
-            all_signals = []
-            for token_signals in signals.values():
-                bullish_signals = sum(1 for signal in token_signals.values() 
-                                    if signal in ['BULLISH', 'BULLISH_CROSSOVER', 'STRONG_BULLISH', 'OVERSOLD'])
-                bearish_signals = sum(1 for signal in token_signals.values()
-                                    if signal in ['BEARISH', 'BEARISH_CROSSOVER', 'STRONG_BEARISH', 'OVERBOUGHT'])
-                
-                if bullish_signals > bearish_signals:
-                    all_signals.append(1)
-                elif bearish_signals > bullish_signals:
-                    all_signals.append(-1)
+                # Simple price momentum (using eth_value as proxy)
+                if len(token_df) >= 3:
+                    values = token_df['eth_value'].values
+                    simple_trend = np.polyfit(range(len(values)), values, 1)[0]
+                    token_momentum['simple_trend'] = simple_trend
                 else:
-                    all_signals.append(0)
+                    token_momentum['simple_trend'] = 0
+                
+                # Overall momentum score
+                momentum_score = (
+                    min((volume_acceleration - 1) * 0.3, 0.3) +
+                    min(tx_frequency * 0.1, 0.2) +
+                    min((wallet_growth - 1) * 0.3, 0.3) +
+                    (0.2 if simple_trend > 0 else 0)
+                )
+                
+                token_momentum['overall_score'] = momentum_score
+                momentum_signals[token] = token_momentum
             
-            technical_strength = (np.mean(all_signals) + 1) / 2 if all_signals else 0.5
+            # Calculate overall momentum strength
+            if momentum_signals:
+                avg_momentum = np.mean([s['overall_score'] for s in momentum_signals.values()])
+                momentum_detected = avg_momentum > 0.5
+            else:
+                avg_momentum = 0
+                momentum_detected = False
             
             return {
-                'indicators': indicators,
-                'signals': signals,
-                'strength': technical_strength,
-                'total_indicators': sum(len(ind) for ind in indicators.values()),
-                'bullish_signals': sum(1 for s in all_signals if s > 0),
-                'bearish_signals': sum(1 for s in all_signals if s < 0)
+                'momentum_detected': momentum_detected,
+                'strength': avg_momentum,
+                'token_momentum': momentum_signals,
+                'total_tokens_analyzed': len(momentum_signals)
             }
             
         except Exception as e:
-            logger.error(f"pandas-ta analysis failed: {e}")
-            return {'indicators': {}, 'signals': {}, 'strength': 0, 'error': str(e)}
+            logger.error(f"Basic momentum analysis failed: {e}")
+            return {'momentum_detected': False, 'strength': 0}
     
-    # ... (rest of your methods remain exactly the same)
-    # _detect_whale_coordination, _detect_pump_signals, etc.
-    
-    def _create_ultimate_scores(self, analyses: Dict, df: pd.DataFrame) -> Dict:
-        """Ultimate scoring with ALL AI features"""
+    def _create_enhanced_scores(self, analyses: Dict, df: pd.DataFrame) -> Dict:
+        """Enhanced scoring without technical indicators"""
         enhanced_scores = {}
         
         # Basic token stats
@@ -342,7 +179,7 @@ class AdvancedCryptoAI:
                 quality_score = min((stats['avg_score'] / 300) * 25, 25)
                 basic_score = volume_score + diversity_score + quality_score
                 
-                # ULTIMATE AI MULTIPLIER
+                # AI MULTIPLIER (without technical analysis)
                 ai_multiplier = 1.0
                 
                 # 1. Whale coordination boost
@@ -355,18 +192,12 @@ class AdvancedCryptoAI:
                 if pump_signals['detected']:
                     ai_multiplier += pump_signals['score'] * 0.5
                 
-                # 3. FULL pandas-ta TECHNICAL ANALYSIS BOOST
-                technical = analyses['technical_indicators']
-                tech_strength = technical.get('strength', 0)
-                if tech_strength > 0.6:
-                    ai_multiplier += tech_strength * 0.4
-                
-                # Technical signal bonus
-                token_signals = technical.get('signals', {}).get(token, {})
-                bullish_tech_signals = sum(1 for signal in token_signals.values()
-                                         if signal in ['BULLISH', 'BULLISH_CROSSOVER', 'STRONG_BULLISH'])
-                if bullish_tech_signals >= 3:
-                    ai_multiplier += 0.2
+                # 3. Basic momentum boost (replaces technical analysis)
+                momentum = analyses['momentum_analysis']
+                token_momentum = momentum.get('token_momentum', {}).get(token, {})
+                momentum_score = token_momentum.get('overall_score', 0)
+                if momentum_score > 0.5:
+                    ai_multiplier += momentum_score * 0.4
                 
                 # 4. Sentiment boost
                 sentiment = analyses['sentiment_analysis']
@@ -384,7 +215,7 @@ class AdvancedCryptoAI:
                 risk_penalty = analyses['risk_assessment']['overall_risk'] * 0.3
                 ai_multiplier = max(ai_multiplier - risk_penalty, 0.6)
                 
-                # Final ULTIMATE score
+                # Final enhanced score
                 ultimate_score = basic_score * ai_multiplier
                 confidence = min(0.95, 0.7 + (ai_multiplier - 1) * 0.25)
                 
@@ -400,12 +231,10 @@ class AdvancedCryptoAI:
                     'diversity_score': diversity_score,
                     'quality_score': quality_score,
                     
-                    # FULL AI analysis
+                    # AI analysis (no technical indicators)
                     'whale_coordination': whale_coord['score'],
                     'pump_probability': pump_signals['score'],
-                    'technical_strength': tech_strength,
-                    'technical_signals_count': len(token_signals),
-                    'bullish_technical_signals': bullish_tech_signals,
+                    'momentum_score': momentum_score,
                     'sentiment_score': sentiment_score,
                     'smart_money_score': smart_money['confidence'],
                     'risk_score': 1 - analyses['risk_assessment']['overall_risk'],
@@ -416,15 +245,16 @@ class AdvancedCryptoAI:
                     'sentiment_direction': token_sentiment.get('overall_sentiment', 'NEUTRAL'),
                     'smart_money_direction': smart_money.get('flow_direction', 'NEUTRAL'),
                     'risk_level': analyses['risk_assessment'].get('risk_level', 'MEDIUM'),
-                    'technical_signals': token_signals,
                     
-                    # Ultimate AI metadata
-                    'pandas_ta_indicators': len(technical.get('indicators', {}).get(token, {})),
+                    # Momentum details
+                    'momentum_details': token_momentum,
+                    
+                    # AI metadata
                     'ai_features_detected': self._count_ai_features(analyses, token)
                 }
                 
             except Exception as e:
-                logger.error(f"Error creating ultimate score for {token}: {e}")
+                logger.error(f"Error creating enhanced score for {token}: {e}")
                 continue
         
         return enhanced_scores
@@ -437,7 +267,7 @@ class AdvancedCryptoAI:
             features += 1
         if analyses['pump_signals']['detected']:
             features += 1
-        if analyses['technical_indicators']['strength'] > 0.5:
+        if analyses['momentum_analysis']['momentum_detected']:
             features += 1
         if analyses['sentiment_analysis'].get('sentiment_detected'):
             features += 1
@@ -448,15 +278,15 @@ class AdvancedCryptoAI:
         
         return features
     
-    def _build_ultimate_result(self, analyses: Dict, enhanced_scores: Dict, analysis_type: str) -> Dict:
-        """Build ultimate analysis result with full AI"""
+    def _build_enhanced_result(self, analyses: Dict, enhanced_scores: Dict, analysis_type: str) -> Dict:
+        """Build enhanced analysis result without technical indicators"""
         return {
             'token_stats': None,
             'scores': enhanced_scores,
             'analysis_type': analysis_type,
             'enhanced': True,
             
-            # Complete AI analysis
+            # AI analysis
             'ai_analyses': analyses,
             
             # Enhanced summary statistics
@@ -470,34 +300,29 @@ class AdvancedCryptoAI:
                 'risk_alerts': sum(1 for s in enhanced_scores.values() if s.get('risk_level') in ['HIGH']),
                 'sentiment_bullish': sum(1 for s in enhanced_scores.values() if s.get('sentiment_direction') == 'BULLISH'),
                 'pump_signals': sum(1 for s in enhanced_scores.values() if s.get('pump_phase') != 'NORMAL'),
-                'technical_bullish': sum(1 for s in enhanced_scores.values() if s.get('bullish_technical_signals', 0) >= 3),
-                'whale_coordination_detected': analyses['whale_coordination']['detected'],
-                'total_pandas_ta_indicators': analyses['technical_indicators'].get('total_indicators', 0)
+                'momentum_bullish': sum(1 for s in enhanced_scores.values() if s.get('momentum_score', 0) > 0.5),
+                'whale_coordination_detected': analyses['whale_coordination']['detected']
             },
             
-            # Ultimate AI metadata
+            # AI metadata
             'enhancement_info': {
-                'ai_engine': 'ULTIMATE Advanced Crypto AI',
+                'ai_engine': 'Advanced Crypto AI (Simplified)',
                 'features_enabled': [
-                    'pandas-ta Technical Analysis (15+ indicators)',
+                    'Basic Momentum Analysis',
                     'Sentiment Analysis (TextBlob + Keywords)',
                     'ML Anomaly Detection (Isolation Forest + DBSCAN)',
                     'Whale Coordination Detection',
-                    'Pump Signal Analysis (Multi-phase)',
+                    'Pump Signal Analysis',
                     'Smart Money Flow Analysis',
-                    'Comprehensive Risk Assessment'
+                    'Risk Assessment'
                 ],
-                'technical_indicators': [
-                    'RSI', 'MACD', 'Bollinger Bands', 'Stochastic', 'Williams %R',
-                    'ADX', 'CCI', 'SMA/EMA', 'OBV', 'Momentum', 'ROC'
-                ],
-                'reliability': 'institutional_grade',
-                'cloud_run_compatible': True,
-                'pandas_ta_version': '0.3.14b0'
+                'technical_indicators': 'None (removed pandas-ta dependency)',
+                'reliability': 'high_grade',
+                'cloud_compatible': True
             }
         }
     
-    # Additional helper methods for the complete system
+    # Keep all the existing helper methods unchanged
     def _create_enhanced_dataframe(self, purchases: List) -> pd.DataFrame:
         """Create enhanced DataFrame with all features"""
         data = []

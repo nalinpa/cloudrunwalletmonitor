@@ -305,34 +305,37 @@ class CloudBuyAnalyzer:
             logger.error("=" * 60)
             return self._empty_result()
     
+   
     def _create_enhanced_result(self, analysis_results: Dict, purchases: List[Purchase]) -> AnalysisResult:
-        """Create enhanced analysis result with AI scoring details - FIXED"""
+        """Create enhanced analysis result with AI scoring details - FIXED to generate notifications"""
         logger.info("Creating enhanced AI analysis result...")
         
         if not analysis_results:
             logger.error("Cannot create result - no analysis results")
             return self._empty_result()
         
-        token_stats = analysis_results.get('token_stats')
         scores = analysis_results.get('scores', {})
+        if not scores and purchases:
+            logger.info("🔧 No AI scores found, creating basic scores for notifications")
+            scores = self._create_basic_scores_for_buys(purchases)
+            analysis_results['scores'] = scores
+        
         is_enhanced = analysis_results.get('enhanced', False)
         
-        logger.info(f"Token stats available: {token_stats is not None}")
         logger.info(f"Scores available: {len(scores)} tokens")
         logger.info(f"AI enhanced: {is_enhanced}")
         
         # Create ranked tokens with enhanced data
         ranked_tokens = []
         contract_lookup = {p.token_bought: p.web3_analysis.get('contract_address', '') 
-                          for p in purchases if p.web3_analysis}
+                        for p in purchases if p.web3_analysis}
         
         logger.info(f"Contract lookup created for {len(contract_lookup)} tokens")
         
-        # FIXED: Only check if scores exist, not token_stats
         if len(scores) > 0:
-            logger.info("Processing token rankings with AI enhancement...")
+            logger.info("Processing token rankings with contract addresses...")
             
-            # Create purchase stats for missing token_stats
+            # Create purchase stats
             purchase_stats = {}
             for purchase in purchases:
                 token = purchase.token_bought
@@ -349,65 +352,51 @@ class CloudBuyAnalyzer:
                 purchase_stats[token]['scores'].append(purchase.sophistication_score or 0)
             
             for token, score_data in scores.items():
-                # Get stats from purchases or defaults
+                # Get stats from purchases
                 pstats = purchase_stats.get(token, {
                     'total_eth': 0, 'count': 1, 'wallets': set(['unknown']), 'scores': [0]
                 })
                 
-                # Enhanced token data with AI metrics
+                # Get contract address
+                contract_address = contract_lookup.get(token, '')
+                
+                # Enhanced token data with contract address
                 token_data = {
                     'total_eth_spent': float(pstats['total_eth']),
                     'wallet_count': len(pstats['wallets']),
                     'total_purchases': int(pstats['count']),
                     'avg_wallet_score': float(sum(pstats['scores']) / len(pstats['scores']) if pstats['scores'] else 0),
                     'platforms': ['DEX'],
-                    'contract_address': contract_lookup.get(token, ''),
+                    'contract_address': contract_address,
+                    'ca': contract_address,  # Alternative field name for notifications
                     'alpha_score': score_data['total_score'],
-                    'is_base_native': self.network == 'base',
+                    'analysis_type': 'buy',
                     
                     # AI Enhancement indicators
                     'ai_enhanced': score_data.get('ai_enhanced', False),
                     'confidence': score_data.get('confidence', 0.7),
                     
-                    # Detailed AI component scores
-                    'ai_scores': {
-                        'volume': score_data.get('volume_score', 0),
-                        'quality': score_data.get('quality_score', 0),
-                        'momentum': score_data.get('momentum_score', 0),
-                        'liquidity': score_data.get('liquidity_score', 0),
-                        'risk': score_data.get('risk_score', 0),
-                        'diversity': score_data.get('diversity_score', 0)
-                    },
-                    
-                    # Web3 enriched data
+                    # Web3 data for notifications
                     'web3_data': {
-                        'token_age_hours': score_data.get('token_age_hours'),
-                        'holder_count': score_data.get('holder_count'),
-                        'liquidity_eth': score_data.get('liquidity_eth'),
-                        'price_change_24h': score_data.get('price_change_24h'),
-                        'smart_money_percentage': score_data.get('smart_money_percentage'),
-                        'whale_activity': score_data.get('whale_activity')
-                    },
-                    
-                    # Risk assessment
-                    'risk_factors': score_data.get('risk_factors', {}),
-                    
-                    # Analysis metadata
-                    'analysis_timestamp': datetime.utcnow().isoformat(),
-                    'network': self.network
+                        'contract_address': contract_address,
+                        'ca': contract_address,
+                        'token_symbol': token,
+                        'network': self.network
+                    }
                 }
                 
                 # Include all enhanced data in tuple for notifications
                 # Format: (token_name, token_data, score, ai_data)
                 ranked_tokens.append((token, token_data, score_data['total_score'], score_data))
                 
-                logger.debug(f"Added enhanced token: {token} (AI score: {score_data['total_score']:.1f}, enhanced: {score_data.get('ai_enhanced', False)})")
+                ca_display = contract_address[:10] + '...' if len(contract_address) > 10 else 'No CA'
+                logger.info(f"✅ Added buy token: {token} (Score: {score_data['total_score']:.1f}, CA: {ca_display})")
         else:
-            logger.warning("No scores available for ranking")
+            logger.warning("❌ Still no scores available for buy ranking")
         
-        # Sort by enhanced AI score
+        # Sort by enhanced score
         ranked_tokens.sort(key=lambda x: x[2], reverse=True)
-        logger.info(f"Final ranked tokens: {len(ranked_tokens)}")
+        logger.info(f"🎯 Final ranked buy tokens: {len(ranked_tokens)}")
         
         # Calculate totals
         total_eth = sum(p.eth_spent for p in purchases)
@@ -420,7 +409,12 @@ class CloudBuyAnalyzer:
         enhanced_stats.update({
             'ai_enhancement_enabled': is_enhanced,
             'data_quality_score': getattr(self.data_processor, '_last_quality_score', 1.0),
-            'processing_stats': self.data_processor.get_processing_stats()
+            'processing_stats': self.data_processor.get_processing_stats(),
+            'buy_analysis_metadata': {
+                'avg_eth_per_buy': total_eth / len(purchases) if purchases else 0,
+                'buy_signals_detected': len(ranked_tokens),
+                'highest_buy_score': ranked_tokens[0][2] if ranked_tokens else 0
+            }
         })
         
         return AnalysisResult(
@@ -448,6 +442,58 @@ class CloudBuyAnalyzer:
             web3_enhanced=True
         )
     
+    def _create_basic_scores_for_buys(self, purchases: List[Purchase]) -> Dict:
+        """Create basic scores when AI scoring fails - ensures notifications are sent"""
+        logger.info("🔧 Creating basic buy scores to ensure notifications")
+        
+        scores = {}
+        
+        # Group purchases by token
+        token_groups = {}
+        for purchase in purchases:
+            token = purchase.token_bought
+            if token not in token_groups:
+                token_groups[token] = []
+            token_groups[token].append(purchase)
+        
+        for token, token_purchases in token_groups.items():
+            # Calculate basic buy metrics
+            total_eth_spent = sum(p.eth_spent for p in token_purchases)
+            unique_wallets = len(set(p.wallet_address for p in token_purchases))
+            avg_wallet_score = sum(p.sophistication_score or 0 for p in token_purchases) / len(token_purchases)
+            
+            # Basic buy scoring
+            volume_score = min(total_eth_spent * 50, 50)       # Up to 50 points for volume
+            wallet_score = min(unique_wallets * 8, 30)         # Up to 30 points for wallet diversity
+            quality_score = min(avg_wallet_score / 10, 20)     # Up to 20 points for wallet quality
+            
+            # ETH bonus for significant buys
+            eth_bonus = 0
+            if total_eth_spent > 5.0:         # 20 points for >5 ETH
+                eth_bonus = 20
+            elif total_eth_spent > 2.0:       # 15 points for >2 ETH
+                eth_bonus = 15
+            elif total_eth_spent > 1.0:       # 10 points for >1 ETH
+                eth_bonus = 10
+            elif total_eth_spent > 0.5:       # 5 points for >0.5 ETH
+                eth_bonus = 5
+            
+            total_score = volume_score + wallet_score + quality_score + eth_bonus
+            
+            scores[token] = {
+                'total_score': float(total_score),
+                'volume_score': float(volume_score),
+                'wallet_score': float(wallet_score), 
+                'quality_score': float(quality_score),
+                'ai_enhanced': False,
+                'confidence': 0.8,  # High confidence for basic scoring
+                'buy_momentum_detected': True
+            }
+            
+            logger.info(f"✅ Basic buy score for {token}: {total_score:.1f} (ETH: {total_eth_spent:.4f}, Wallets: {unique_wallets}, Bonus: {eth_bonus})")
+        
+        return scores
+
     async def cleanup(self):
         """Enhanced cleanup with AI resources"""
         try:

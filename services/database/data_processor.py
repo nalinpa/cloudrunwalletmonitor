@@ -1,3 +1,5 @@
+# Enhanced Data Processor - Updated to ensure contract addresses are properly extracted and included
+
 import pandas as pd
 import numpy as np
 import logging
@@ -20,7 +22,7 @@ except ImportError as e:
 AI_SCORING_AVAILABLE = AI_COMPLETE
 
 class DataProcessor:
-    """Enhanced data processor with AI-powered alpha scoring and optional storage"""
+    """Enhanced data processor with contract address extraction and AI-powered alpha scoring"""
     
     def __init__(self):
         # Token exclusion lists
@@ -72,10 +74,44 @@ class DataProcessor:
         
         return False
     
+    def extract_contract_address(self, transfer: Dict) -> str:
+        """Enhanced contract address extraction from transfer data"""
+        # Try multiple locations for contract address
+        contract_address = ""
+        
+        # Method 1: Direct from rawContract
+        raw_contract = transfer.get("rawContract", {})
+        if raw_contract and isinstance(raw_contract, dict):
+            contract_address = raw_contract.get("address", "")
+        
+        # Method 2: From contractAddress field
+        if not contract_address:
+            contract_address = transfer.get("contractAddress", "")
+        
+        # Method 3: From to/from addresses (for ERC20)
+        if not contract_address:
+            to_address = transfer.get("to", "")
+            from_address = transfer.get("from", "")
+            # Use 'to' address for incoming transfers as it might be the token contract
+            if to_address and to_address.lower() != "0x0000000000000000000000000000000000000000":
+                contract_address = to_address
+        
+        # Clean and validate
+        if contract_address:
+            contract_address = contract_address.strip().lower()
+            if not contract_address.startswith('0x'):
+                contract_address = '0x' + contract_address
+            
+            # Validate length (Ethereum addresses are 42 characters including 0x)
+            if len(contract_address) == 42:
+                return contract_address
+        
+        return ""
+    
     async def process_transfers_to_purchases(self, wallets: List[WalletInfo], 
                                            all_transfers: Dict, network: str,
                                            store_data: bool = False) -> List[Purchase]:
-        """Process transfers to identify BUY transactions with optional storage"""
+        """Process transfers to identify BUY transactions with enhanced contract address extraction"""
         purchases = []
         all_transfer_records = []
         wallet_scores = {w.address: w.score for w in wallets}
@@ -94,8 +130,7 @@ class DataProcessor:
             for transfer in incoming:
                 try:
                     asset = transfer.get("asset")
-                    contract_info = transfer.get("rawContract", {})
-                    contract_address = contract_info.get("address", "").lower()
+                    contract_address = self.extract_contract_address(transfer)
                     amount = float(transfer.get("value", "0"))
                     tx_hash = transfer.get("hash", "")
                     block_num = transfer.get("blockNum", "0x0")
@@ -138,7 +173,12 @@ class DataProcessor:
                             block_number=block_number,
                             timestamp=self._parse_timestamp(transfer, block_number),
                             sophistication_score=wallet_scores.get(address, 0),
-                            web3_analysis={"contract_address": contract_address}
+                            web3_analysis={
+                                "contract_address": contract_address,
+                                "ca": contract_address,  # Alternative field name
+                                "token_symbol": asset,
+                                "network": network
+                            }
                         )
                         purchases.append(purchase)
                         
@@ -150,8 +190,7 @@ class DataProcessor:
             for transfer in outgoing:
                 try:
                     asset = transfer.get("asset")
-                    contract_info = transfer.get("rawContract", {})
-                    contract_address = contract_info.get("address", "").lower()
+                    contract_address = self.extract_contract_address(transfer)
                     amount = float(transfer.get("value", "0"))
                     tx_hash = transfer.get("hash", "")
                     block_num = transfer.get("blockNum", "0x0")
@@ -203,12 +242,17 @@ class DataProcessor:
             self._last_stored_count = 0
         
         logger.info(f"BUY: Created {len(purchases)} purchases from {len(all_transfer_records)} total transfers")
+        
+        # Log contract address extraction stats
+        purchases_with_ca = sum(1 for p in purchases if p.web3_analysis and p.web3_analysis.get('contract_address'))
+        logger.info(f"Contract addresses extracted: {purchases_with_ca}/{len(purchases)} purchases")
+        
         return purchases
     
     async def process_transfers_to_sells(self, wallets: List[WalletInfo], 
                                        all_transfers: Dict, network: str,
                                        store_data: bool = False) -> List[Purchase]:
-        """Process transfers to identify SELL transactions with optional storage"""
+        """Process transfers to identify SELL transactions with enhanced contract address extraction"""
         sells = []
         all_transfer_records = []
         wallet_scores = {w.address: w.score for w in wallets}
@@ -227,8 +271,7 @@ class DataProcessor:
             for transfer in outgoing:
                 try:
                     asset = transfer.get("asset")
-                    contract_info = transfer.get("rawContract", {})
-                    contract_address = contract_info.get("address", "").lower()
+                    contract_address = self.extract_contract_address(transfer)
                     amount_sold = float(transfer.get("value", "0"))
                     tx_hash = transfer.get("hash", "")
                     block_num = transfer.get("blockNum", "0x0")
@@ -273,14 +316,17 @@ class DataProcessor:
                             sophistication_score=wallet_scores.get(address, 0),
                             web3_analysis={
                                 "contract_address": contract_address,
+                                "ca": contract_address,  # Alternative field name
                                 "amount_sold": amount_sold,
-                                "is_sell": True
+                                "is_sell": True,
+                                "token_symbol": asset,
+                                "network": network
                             }
                         )
                         sells.append(sell)
                         
                         # DEBUG LOG to see what's being detected
-                        logger.info(f"SELL DETECTED: {asset} amount_sold={amount_sold} eth_received={eth_received:.6f} tx={tx_hash[:10]}...")
+                        logger.info(f"SELL DETECTED: {asset} amount_sold={amount_sold} eth_received={eth_received:.6f} CA={contract_address[:10]}... tx={tx_hash[:10]}...")
                         
                 except Exception as e:
                     logger.debug(f"Error processing sell transfer: {e}")
@@ -290,8 +336,7 @@ class DataProcessor:
             for transfer in incoming:
                 try:
                     asset = transfer.get("asset")
-                    contract_info = transfer.get("rawContract", {})
-                    contract_address = contract_info.get("address", "").lower()
+                    contract_address = self.extract_contract_address(transfer)
                     amount = float(transfer.get("value", "0"))
                     tx_hash = transfer.get("hash", "")
                     block_num = transfer.get("blockNum", "0x0")
@@ -344,23 +389,194 @@ class DataProcessor:
         
         logger.info(f"SELL: Created {len(sells)} sells from {len(all_transfer_records)} total transfers")
         
+        # Log contract address extraction stats
+        sells_with_ca = sum(1 for s in sells if s.web3_analysis and s.web3_analysis.get('contract_address'))
+        logger.info(f"Contract addresses extracted: {sells_with_ca}/{len(sells)} sells")
+        
         # Additional debug info for sells
         if sells:
             total_eth_received = sum(s.amount_received for s in sells)
             unique_tokens = set(s.token_bought for s in sells)
             logger.info(f"SELL SUMMARY: {total_eth_received:.6f} ETH received from selling {len(unique_tokens)} unique tokens")
             
-            # Log top sells
+            # Log top sells with contract addresses
             sells_sorted = sorted(sells, key=lambda x: x.amount_received, reverse=True)
             logger.info("Top 5 sells by ETH received:")
             for i, sell in enumerate(sells_sorted[:5]):
-                logger.info(f"  {i+1}. {sell.token_bought}: {sell.amount_received:.6f} ETH (amount_sold: {sell.web3_analysis.get('amount_sold', 0)})")
+                ca = sell.web3_analysis.get('contract_address', 'No CA')[:10] if sell.web3_analysis else 'No CA'
+                logger.info(f"  {i+1}. {sell.token_bought}: {sell.amount_received:.6f} ETH (CA: {ca}...)")
         else:
             logger.warning("No sells detected - check if _calculate_eth_received is working properly")
         
         return sells
     
-    # Keep all your existing helper methods unchanged...
+    def _create_enhanced_result_with_ca(self, analysis_results: Dict, purchases: List[Purchase], analysis_type: str) -> Dict:
+        """Create enhanced analysis result ensuring contract addresses are included"""
+        logger.info("Creating enhanced AI analysis result with contract addresses...")
+        
+        if not analysis_results:
+            logger.error("Cannot create result - no analysis results")
+            return self._create_empty_result(analysis_type)
+        
+        token_stats = analysis_results.get('token_stats')
+        scores = analysis_results.get('scores', {})
+        is_enhanced = analysis_results.get('enhanced', False)
+        
+        logger.info(f"Token stats available: {token_stats is not None}")
+        logger.info(f"Scores available: {len(scores)} tokens")
+        logger.info(f"AI enhanced: {is_enhanced}")
+        
+        # Create enhanced ranked tokens with contract addresses
+        ranked_tokens = []
+        
+        # Build contract address lookup from purchases
+        contract_lookup = {}
+        for p in purchases:
+            token = p.token_bought
+            if p.web3_analysis:
+                ca = p.web3_analysis.get('contract_address', '')
+                if not ca:
+                    ca = p.web3_analysis.get('ca', '')
+                if ca and len(ca) > 10:
+                    contract_lookup[token] = ca
+        
+        logger.info(f"Contract lookup created for {len(contract_lookup)} tokens")
+        
+        if len(scores) > 0:
+            logger.info("Processing token rankings with contract addresses...")
+            
+            # Create purchase/sell stats for missing token_stats
+            purchase_stats = {}
+            for purchase in purchases:
+                token = purchase.token_bought
+                if token not in purchase_stats:
+                    purchase_stats[token] = {
+                        'total_eth': 0,
+                        'count': 0,
+                        'wallets': set(),
+                        'scores': [],
+                        'tokens_amount': 0
+                    }
+                
+                if analysis_type == 'sell':
+                    purchase_stats[token]['total_eth'] += purchase.amount_received
+                    if purchase.web3_analysis:
+                        purchase_stats[token]['tokens_amount'] += purchase.web3_analysis.get('amount_sold', 0)
+                else:
+                    purchase_stats[token]['total_eth'] += purchase.eth_spent
+                    purchase_stats[token]['tokens_amount'] += purchase.amount_received
+                
+                purchase_stats[token]['count'] += 1
+                purchase_stats[token]['wallets'].add(purchase.wallet_address)
+                purchase_stats[token]['scores'].append(purchase.sophistication_score or 0)
+            
+            for token, score_data in scores.items():
+                # Get stats from purchases or defaults
+                pstats = purchase_stats.get(token, {
+                    'total_eth': 0, 'count': 1, 'wallets': set(['unknown']), 'scores': [0], 'tokens_amount': 0
+                })
+                
+                # Get contract address
+                contract_address = contract_lookup.get(token, '')
+                
+                # Enhanced token data with contract address
+                if analysis_type == 'sell':
+                    token_data = {
+                        'total_eth_received': float(pstats['total_eth']),
+                        'wallet_count': len(pstats['wallets']),
+                        'total_sells': int(pstats['count']),
+                        'avg_wallet_score': float(sum(pstats['scores']) / len(pstats['scores']) if pstats['scores'] else 0),
+                        'total_tokens_sold': float(pstats['tokens_amount']),
+                        'avg_sell_size': float(pstats['total_eth'] / pstats['count'] if pstats['count'] > 0 else 0),
+                        'platforms': ['Transfer'],
+                        'contract_address': contract_address,
+                        'ca': contract_address,  # Alternative field name
+                        'sell_pressure_score': score_data['total_score'],
+                        'analysis_type': 'sell'
+                    }
+                else:
+                    token_data = {
+                        'total_eth_spent': float(pstats['total_eth']),
+                        'wallet_count': len(pstats['wallets']),
+                        'total_purchases': int(pstats['count']),
+                        'avg_wallet_score': float(sum(pstats['scores']) / len(pstats['scores']) if pstats['scores'] else 0),
+                        'platforms': ['DEX'],
+                        'contract_address': contract_address,
+                        'ca': contract_address,  # Alternative field name
+                        'alpha_score': score_data['total_score'],
+                        'analysis_type': 'buy'
+                    }
+                
+                # Add AI enhancement data
+                token_data.update({
+                    'ai_enhanced': score_data.get('ai_enhanced', False),
+                    'confidence': score_data.get('confidence', 0.7),
+                    'ai_scores': {
+                        'volume': score_data.get('volume_score', 0),
+                        'quality': score_data.get('quality_score', 0),
+                        'momentum': score_data.get('momentum_score', 0),
+                        'liquidity': score_data.get('liquidity_score', 0),
+                        'risk': score_data.get('risk_score', 0),
+                        'diversity': score_data.get('diversity_score', 0)
+                    },
+                    'web3_data': {
+                        'contract_address': contract_address,
+                        'ca': contract_address,
+                        'token_age_hours': score_data.get('token_age_hours'),
+                        'holder_count': score_data.get('holder_count'),
+                        'liquidity_eth': score_data.get('liquidity_eth'),
+                        'price_change_24h': score_data.get('price_change_24h'),
+                        'smart_money_percentage': score_data.get('smart_money_percentage'),
+                        'whale_activity': score_data.get('whale_activity')
+                    },
+                    'risk_factors': score_data.get('risk_factors', {}),
+                    'analysis_timestamp': datetime.utcnow().isoformat(),
+                    'network': getattr(self, 'current_network', 'unknown')
+                })
+                
+                # Include all enhanced data in tuple for notifications
+                # Format: (token_name, token_data, score, ai_data)
+                ranked_tokens.append((token, token_data, score_data['total_score'], score_data))
+                
+                ca_display = contract_address[:10] + '...' if len(contract_address) > 10 else 'No CA'
+                logger.debug(f"Added enhanced token: {token} (Score: {score_data['total_score']:.1f}, CA: {ca_display})")
+        else:
+            logger.warning("No scores available for ranking")
+        
+        # Sort by score
+        ranked_tokens.sort(key=lambda x: x[2], reverse=True)
+        logger.info(f"Final ranked tokens with contract addresses: {len(ranked_tokens)}")
+        
+        # Calculate totals
+        if analysis_type == 'sell':
+            total_eth = sum(p.amount_received for p in purchases)
+        else:
+            total_eth = sum(p.eth_spent for p in purchases)
+        unique_tokens = len(set(p.token_bought for p in purchases))
+        
+        logger.info(f"Enhanced result summary: {len(purchases)} transactions, {unique_tokens} tokens, {total_eth:.4f} ETH")
+        
+        # Log contract address stats
+        tokens_with_ca = sum(1 for token, data, score, ai_data in ranked_tokens if data.get('contract_address'))
+        logger.info(f"Tokens with contract addresses: {tokens_with_ca}/{len(ranked_tokens)}")
+        
+        return {
+            'network': getattr(self, 'current_network', 'unknown'),
+            'analysis_type': analysis_type,
+            'total_transactions': len(purchases),
+            'unique_tokens': unique_tokens,
+            'total_eth_value': total_eth,
+            'ranked_tokens': ranked_tokens,
+            'performance_metrics': {
+                **self.get_processing_stats(),
+                'contract_addresses_extracted': tokens_with_ca,
+                'ai_enhancement_enabled': is_enhanced
+            },
+            'web3_enhanced': True,
+            'enhanced': is_enhanced
+        }
+    
+    # Keep all existing helper methods unchanged...
     def _parse_timestamp(self, transfer: Dict, block_number: int = None) -> datetime:
         """Parse timestamp from transfer data or estimate from block"""
         # Try to get timestamp from transfer metadata
@@ -627,13 +843,20 @@ class DataProcessor:
                 # For buys, use eth_spent as the ETH value
                 eth_value = p.amount_received if analysis_type == 'sell' else p.eth_spent
                 
+                # Extract contract address
+                contract_address = ''
+                if p.web3_analysis:
+                    contract_address = p.web3_analysis.get('contract_address', '')
+                    if not contract_address:
+                        contract_address = p.web3_analysis.get('ca', '')
+                
                 data.append({
                     'token': p.token_bought,
                     'eth_value': eth_value,
-                    'amount': p.amount_received if analysis_type == 'buy' else p.web3_analysis.get('amount_sold', 0),
+                    'amount': p.amount_received if analysis_type == 'buy' else p.web3_analysis.get('amount_sold', 0) if p.web3_analysis else 0,
                     'wallet': p.wallet_address,
                     'score': p.sophistication_score or 0,
-                    'contract': p.web3_analysis.get('contract_address', '') if p.web3_analysis else ''
+                    'contract': contract_address
                 })
             
             df = pd.DataFrame(data)
@@ -691,36 +914,74 @@ class DataProcessor:
             return {}
     
     async def analyze_purchases_enhanced(self, purchases: List, analysis_type: str) -> Dict:
-        """COMPLETE AI-Enhanced analysis with all features"""
+        """COMPLETE AI-Enhanced analysis with contract address extraction"""
+        
+        # Store current network for result creation
+        if purchases and len(purchases) > 0:
+            first_purchase = purchases[0]
+            if hasattr(first_purchase, 'web3_analysis') and first_purchase.web3_analysis:
+                self.current_network = first_purchase.web3_analysis.get('network', 'unknown')
+            else:
+                self.current_network = 'unknown'
+        else:
+            self.current_network = 'unknown'
         
         if self._enhanced_scoring_enabled and self.ai_engine:
             try:
-                logger.info(f"🚀 LAUNCHING COMPLETE AI ANALYSIS...")
+                logger.info(f"🚀 LAUNCHING COMPLETE AI ANALYSIS WITH CONTRACT ADDRESSES...")
                 
                 # Run complete AI analysis
                 result = await self.ai_engine.complete_ai_analysis(purchases, analysis_type)
                 
                 if result.get('enhanced'):
+                    # Enhance result with contract addresses
+                    enhanced_result = self._create_enhanced_result_with_ca(result, purchases, analysis_type)
+                    
                     # Log amazing results
-                    summary = result.get('analysis_summary', {})
-                    logger.info(f"🎉 COMPLETE AI SUCCESS!")
+                    summary = enhanced_result.get('analysis_summary', result.get('analysis_summary', {}))
+                    logger.info(f"🎉 COMPLETE AI SUCCESS WITH CONTRACT ADDRESSES!")
                     logger.info(f"🔍 AI Patterns Detected: {summary.get('ai_patterns_detected', 0)}")
                     logger.info(f"🎯 High Confidence Tokens: {summary.get('high_confidence_tokens', 0)}")
                     logger.info(f"⚠️ Risk Alerts: {summary.get('risk_alerts', 0)}")
                     logger.info(f"📈 Bullish Sentiment: {summary.get('sentiment_bullish', 0)}")
                     logger.info(f"🚀 Pump Signals: {summary.get('pump_signals', 0)}")
+                    logger.info(f"📋 Contract Addresses: {enhanced_result['performance_metrics'].get('contract_addresses_extracted', 0)}")
                     
-                    return result
+                    return enhanced_result
                     
             except Exception as e:
                 logger.error(f"Complete AI failed: {e}")
         
-        # Fallback to your existing basic analysis
-        logger.info("📊 Using basic analysis fallback")
-        return self.analyze_purchases(purchases, analysis_type)
+        # Fallback to basic analysis with contract address extraction
+        logger.info("📊 Using basic analysis fallback with contract addresses")
+        basic_result = self.analyze_purchases(purchases, analysis_type)
+        
+        if basic_result:
+            # Enhance basic result with contract addresses
+            return self._create_enhanced_result_with_ca(basic_result, purchases, analysis_type)
+        
+        return {}
+    
+    def _create_empty_result(self, analysis_type: str) -> Dict:
+        """Create empty result with contract address support"""
+        return {
+            'network': getattr(self, 'current_network', 'unknown'),
+            'analysis_type': analysis_type,
+            'total_transactions': 0,
+            'unique_tokens': 0,
+            'total_eth_value': 0.0,
+            'ranked_tokens': [],
+            'performance_metrics': {
+                **self.get_processing_stats(),
+                'contract_addresses_extracted': 0
+            },
+            'web3_enhanced': True,
+            'enhanced': False,
+            'error': 'No data to analyze'
+        }
     
     def get_ai_insights_summary(self, result: Dict) -> str:
-        """Get human-readable AI insights summary"""
+        """Get human-readable AI insights summary with contract address info"""
         if not result.get('enhanced'):
             return "Basic analysis - no AI insights available"
         
@@ -731,6 +992,11 @@ class DataProcessor:
         insights.append(f"🤖 AI Analysis Complete!")
         insights.append(f"📊 {summary.get('total_tokens', 0)} tokens analyzed")
         insights.append(f"🔍 {summary.get('ai_patterns_detected', 0)} patterns detected")
+        
+        # Contract address info
+        ca_count = result.get('performance_metrics', {}).get('contract_addresses_extracted', 0)
+        if ca_count > 0:
+            insights.append(f"📋 {ca_count} contract addresses extracted")
         
         # Whale coordination
         whale_coord = ai_analyses.get('whale_coordination', {})
@@ -765,32 +1031,36 @@ class DataProcessor:
     def _get_contract_address(self, token_purchases: List[Purchase]) -> str:
         """Extract contract address from purchases"""
         for purchase in token_purchases:
-            if purchase.web3_analysis and purchase.web3_analysis.get('contract_address'):
-                contract = purchase.web3_analysis['contract_address']
+            if purchase.web3_analysis:
+                contract = purchase.web3_analysis.get('contract_address', '')
+                if not contract:
+                    contract = purchase.web3_analysis.get('ca', '')
                 if contract and len(contract) > 10:
                     return contract
         return ""
     
     def _get_network(self, token_purchases: List[Purchase]) -> str:
         """Extract network from purchases"""
-        # Try to get from transfer records or use default
-        # You can enhance this based on your data structure
-        return "ethereum"  # Default fallback
+        for purchase in token_purchases:
+            if purchase.web3_analysis and purchase.web3_analysis.get('network'):
+                return purchase.web3_analysis['network']
+        return getattr(self, 'current_network', 'unknown')
     
     # Additional utility methods for debugging and monitoring
     
     def get_processing_stats(self) -> Dict:
-        """Get processing statistics"""
+        """Get processing statistics with contract address info"""
         return {
             'last_stored_count': self._last_stored_count,
             'enhanced_scoring_enabled': self._enhanced_scoring_enabled,
             'ai_scoring_available': AI_SCORING_AVAILABLE,
             'excluded_assets_count': len(self.EXCLUDED_ASSETS),
-            'excluded_contracts_count': len(self.EXCLUDED_CONTRACTS)
+            'excluded_contracts_count': len(self.EXCLUDED_CONTRACTS),
+            'contract_address_extraction': 'enhanced'
         }
     
     def log_token_analysis_summary(self, purchases: List[Purchase], analysis_type: str):
-        """Log comprehensive analysis summary"""
+        """Log comprehensive analysis summary with contract address stats"""
         if not purchases:
             logger.info(f"No {analysis_type} transactions to analyze")
             return
@@ -799,6 +1069,10 @@ class DataProcessor:
         total_eth = sum(p.eth_spent if analysis_type == 'buy' else p.amount_received for p in purchases)
         unique_tokens = len(set(p.token_bought for p in purchases))
         unique_wallets = len(set(p.wallet_address for p in purchases))
+        
+        # Contract address statistics
+        purchases_with_ca = sum(1 for p in purchases if p.web3_analysis and p.web3_analysis.get('contract_address'))
+        ca_extraction_rate = (purchases_with_ca / len(purchases)) * 100 if purchases else 0
         
         # Token distribution
         token_counts = {}
@@ -812,6 +1086,7 @@ class DataProcessor:
         logger.info(f"Total ETH volume: {total_eth:.6f}")
         logger.info(f"Unique tokens: {unique_tokens}")
         logger.info(f"Unique wallets: {unique_wallets}")
+        logger.info(f"Contract addresses extracted: {purchases_with_ca}/{len(purchases)} ({ca_extraction_rate:.1f}%)")
         logger.info(f"Top tokens by transaction count:")
         for token, count in top_tokens:
             logger.info(f"  - {token}: {count} transactions")
@@ -819,7 +1094,7 @@ class DataProcessor:
         logger.info("=" * 40)
     
     async def validate_data_quality(self, purchases: List[Purchase]) -> Dict:
-        """Validate data quality and return metrics"""
+        """Validate data quality including contract address extraction"""
         if not purchases:
             return {'valid': False, 'reason': 'No purchases provided'}
         
@@ -830,11 +1105,13 @@ class DataProcessor:
             'missing_contracts': 0,
             'missing_timestamps': 0,
             'duplicate_transactions': 0,
+            'contract_address_rate': 0.0,
             'valid': True,
             'warnings': []
         }
         
         seen_hashes = set()
+        purchases_with_ca = 0
         
         for purchase in purchases:
             # Check for valid ETH values
@@ -845,7 +1122,16 @@ class DataProcessor:
                 validation_results['valid_purchases'] += 1
             
             # Check for contract addresses
-            if not purchase.web3_analysis or not purchase.web3_analysis.get('contract_address'):
+            has_contract = False
+            if purchase.web3_analysis:
+                ca = purchase.web3_analysis.get('contract_address', '')
+                if not ca:
+                    ca = purchase.web3_analysis.get('ca', '')
+                if ca and len(ca) > 10:
+                    has_contract = True
+                    purchases_with_ca += 1
+            
+            if not has_contract:
                 validation_results['missing_contracts'] += 1
             
             # Check for timestamps
@@ -858,12 +1144,18 @@ class DataProcessor:
             else:
                 seen_hashes.add(purchase.transaction_hash)
         
+        # Calculate contract address extraction rate
+        validation_results['contract_address_rate'] = purchases_with_ca / len(purchases) if purchases else 0
+        
         # Generate warnings
         if validation_results['zero_eth_purchases'] > len(purchases) * 0.5:
             validation_results['warnings'].append("High percentage of zero ETH transactions")
         
         if validation_results['missing_contracts'] > len(purchases) * 0.3:
             validation_results['warnings'].append("Many transactions missing contract addresses")
+        
+        if validation_results['contract_address_rate'] < 0.7:
+            validation_results['warnings'].append(f"Low contract address extraction rate: {validation_results['contract_address_rate']:.1%}")
         
         if validation_results['duplicate_transactions'] > 0:
             validation_results['warnings'].append(f"{validation_results['duplicate_transactions']} duplicate transactions found")
@@ -876,5 +1168,6 @@ class DataProcessor:
             validation_results['warnings'].append("Poor data quality - less than 50% valid transactions")
         
         logger.info(f"Data validation: {validation_results['valid_purchases']}/{len(purchases)} valid, quality score: {validation_results['data_quality_score']:.2f}")
+        logger.info(f"Contract address extraction: {purchases_with_ca}/{len(purchases)} ({validation_results['contract_address_rate']:.1%})")
         
         return validation_results

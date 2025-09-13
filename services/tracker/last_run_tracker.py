@@ -1,8 +1,3 @@
-"""
-Last Run Tracking Service for Smart Timing
-Handles BigQuery operations for tracking analysis runs
-"""
-
 import logging
 from datetime import datetime
 from typing import Dict, List, Optional

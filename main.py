@@ -4,7 +4,6 @@ import logging
 from datetime import datetime
 import traceback
 
-# 🚀 PERFORMANCE BOOST: Use orjson instead of json (3x faster)
 try:
     import orjson as json
     def json_dumps(data):

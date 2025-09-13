@@ -1,6 +1,3 @@
-# Enhanced Alpha Score Calculator using Web3.py and AI Logic
-# Add this as a new file: services/scoring/alpha_calculator.py
-
 import logging
 import asyncio
 from typing import Dict, List, Optional, Tuple

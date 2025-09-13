@@ -10,7 +10,7 @@ from services.database.database_client import DatabaseService
 from services.database.bigquery_client import BigQueryTransferService
 from services.blockchain.alchemy_client import AlchemyService
 from api.models.data_models import AnalysisResult, WalletInfo, Purchase
-from services.database.data_processor import DataProcessor
+from services.database.data_processor import Web3DataProcessor
 from utils.config import Config
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ class CloudSellAnalyzer:
         self.alchemy_service = AlchemyService(self.config)
         
         # Enhanced data processor with AI capabilities
-        self.data_processor = DataProcessor()
+        self.data_processor = Web3DataProcessor()
         
         self._initialized = False
         

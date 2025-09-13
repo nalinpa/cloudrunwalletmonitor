@@ -1,464 +1,742 @@
-from services.database.data_processor_base import DataProcessor
 import pandas as pd
 import numpy as np
 import logging
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timedelta
-from web3 import Web3
-from web3.middleware import geth_poa_middleware
+from functools import lru_cache
 import asyncio
-import aiohttp
+
 from api.models.data_models import WalletInfo, Purchase, Transfer, TransferType
 
 logger = logging.getLogger(__name__)
 
-# Standard ERC20 ABI for token metadata
-ERC20_ABI = [
-    {
-        "constant": True,
-        "inputs": [],
-        "name": "name",
-        "outputs": [{"name": "", "type": "string"}],
-        "type": "function"
-    },
-    {
-        "constant": True,
-        "inputs": [],
-        "name": "symbol",
-        "outputs": [{"name": "", "type": "string"}],
-        "type": "function"
-    },
-    {
-        "constant": True,
-        "inputs": [],
-        "name": "decimals",
-        "outputs": [{"name": "", "type": "uint8"}],
-        "type": "function"
-    },
-    {
-        "constant": True,
-        "inputs": [],
-        "name": "totalSupply",
-        "outputs": [{"name": "", "type": "uint256"}],
-        "type": "function"
-    },
-    {
-        "constant": True,
-        "inputs": [{"name": "_owner", "type": "address"}],
-        "name": "balanceOf",
-        "outputs": [{"name": "balance", "type": "uint256"}],
-        "type": "function"
-    }
-]
+# Import AI system with error handling
+try:
+    from core.analysis.ai_system import AdvancedCryptoAI
+    AI_AVAILABLE = True
+    logger.info("🚀 AI system loaded successfully")
+except ImportError as e:
+    AI_AVAILABLE = False
+    logger.info(f"📊 AI system not available: {e}")
 
-class Web3DataProcessor(DataProcessor):
+# Optional Web3 integration
+try:
+    from web3 import Web3
+    from web3.middleware import geth_poa_middleware
+    WEB3_AVAILABLE = True
+except ImportError:
+    WEB3_AVAILABLE = False
+
+class UnifiedDataProcessor:
     """
-    Enhanced Data Processor that EXTENDS your existing DataProcessor
-    Inherits ALL existing functionality and adds Web3 features
+    Unified Data Processor - combines data_processor.py + data_processor_base.py
+    Handles all data processing, Web3 integration, and AI analysis in one place
     """
     
     def __init__(self):
-        # Initialize parent class - keeps ALL your existing functionality
-        super().__init__()
+        # Token exclusion lists (simplified)
+        self.excluded_assets = frozenset({
+            'ETH', 'WETH', 'USDC', 'USDT', 'DAI', 'BUSD', 'FRAX', 'LUSD', 'USDC.E'
+        })
         
-        # Add Web3-specific attributes
+        self.excluded_contracts = frozenset({
+            '0xdac17f958d2ee523a2206206994597c13d831ec7',  # USDT
+            '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',  # USDC
+            '0x6b175474e89094c44da98b954eedeac495271d0f',  # DAI
+            '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',  # WETH
+            '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',  # USDC on Base
+        })
+        
+        # Services
+        self.bigquery_transfer_service = None
+        self._last_stored_count = 0
+        
+        # AI system (lazy loaded)
+        self.ai_engine = None
+        self._ai_enabled = AI_AVAILABLE
+        
+        # Web3 system (lazy loaded)
         self.w3_connections = {}
-        self.token_metadata_cache = {}
-        self.contract_verification_cache = {}
-        self.honeypot_cache = {}
-        self.liquidity_cache = {}
+        self.web3_enabled = WEB3_AVAILABLE
+        self._web3_cache = {}
         
-        # Web3 configuration
-        self.web3_enabled = False
-        self.cache_ttl = 300  # 5 minutes
+        # Performance tracking
+        self.stats = {
+            'transfers_processed': 0,
+            'transfers_stored': 0,
+            'ai_enhanced_tokens': 0,
+            'web3_enriched_tokens': 0
+        }
         
-        # Initialize Web3 connections
-        self._initialize_web3()
-        
-        logger.info("🔷 Web3 Enhanced Data Processor initialized (extends existing DataProcessor)")
+        logger.info("🚀 Unified Data Processor initialized")
+        logger.info(f"  AI: {'✓ Available' if AI_AVAILABLE else '✗ Not available'}")
+        logger.info(f"  Web3: {'✓ Available' if WEB3_AVAILABLE else '✗ Not available'}")
     
-    def _initialize_web3(self):
-        """Initialize Web3 connections for supported networks"""
-        import os
-        alchemy_key = os.getenv('ALCHEMY_API_KEY')
-        
-        if not alchemy_key:
-            logger.warning("No Alchemy API key - Web3 features disabled")
-            self.web3_enabled = False
-            return
-        
-        try:
-            # Ethereum connection
-            self.w3_connections['ethereum'] = Web3(Web3.HTTPProvider(
-                f'https://eth-mainnet.g.alchemy.com/v2/{alchemy_key}'
-            ))
-            
-            # Base connection with POA middleware
-            base_w3 = Web3(Web3.HTTPProvider(
-                f'https://base-mainnet.g.alchemy.com/v2/{alchemy_key}'
-            ))
-            base_w3.middleware_onion.inject(geth_poa_middleware, layer=0)
-            self.w3_connections['base'] = base_w3
-            
-            self.web3_enabled = True
-            logger.info("✅ Web3 connections established")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize Web3: {e}")
-            self.web3_enabled = False
+    def set_transfer_service(self, transfer_service):
+        """Set BigQuery transfer service"""
+        self.bigquery_transfer_service = transfer_service
+        logger.info("✅ BigQuery transfer service connected")
     
-    async def get_token_metadata_web3(self, contract_address: str, network: str) -> Dict:
-        """Get comprehensive token metadata using Web3"""
+    # ============================================================================
+    # TOKEN FILTERING & VALIDATION
+    # ============================================================================
+    
+    def is_excluded_token(self, asset: str, contract_address: str = None) -> bool:
+        """Check if token should be excluded - simplified logic"""
+        if not asset:
+            return True
+            
+        asset_upper = asset.upper()
         
-        # Check cache first
-        cache_key = f"{network}:{contract_address}"
-        if cache_key in self.token_metadata_cache:
-            cached = self.token_metadata_cache[cache_key]
-            if (datetime.now() - cached['timestamp']).seconds < self.cache_ttl:
-                return cached['data']
+        # Check excluded assets
+        if asset_upper in self.excluded_assets:
+            return True
         
-        # Return empty if Web3 not enabled
-        if not self.web3_enabled:
-            return {}
+        # Check excluded contracts
+        if contract_address and contract_address.lower() in self.excluded_contracts:
+            return True
         
-        w3 = self.w3_connections.get(network)
-        if not w3 or not w3.is_connected():
-            return {}
+        # Check stablecoin patterns
+        if len(asset) <= 6 and any(stable in asset_upper for stable in ['USD', 'DAI']):
+            return True
         
+        return False
+    
+    def extract_contract_address(self, transfer: Dict) -> str:
+        """Extract contract address - unified approach"""
+        contract_address = ""
+        
+        # Method 1: rawContract.address
+        raw_contract = transfer.get("rawContract", {})
+        if isinstance(raw_contract, dict) and raw_contract.get("address"):
+            contract_address = raw_contract["address"]
+        
+        # Method 2: contractAddress field
+        elif transfer.get("contractAddress"):
+            contract_address = transfer["contractAddress"]
+        
+        # Method 3: 'to' address for ERC20
+        elif transfer.get("to"):
+            to_address = transfer["to"]
+            if to_address != "0x0000000000000000000000000000000000000000":
+                contract_address = to_address
+        
+        # Clean and validate
+        if contract_address:
+            contract_address = contract_address.strip().lower()
+            if not contract_address.startswith('0x'):
+                contract_address = '0x' + contract_address
+            
+            # Validate Ethereum address format
+            if len(contract_address) == 42:
+                return contract_address
+        
+        return ""
+    
+    # ============================================================================
+    # ETH CALCULATION - UNIFIED APPROACH
+    # ============================================================================
+    
+    def _calculate_eth_spent(self, outgoing_transfers: List[Dict], 
+                           target_tx: str, target_block: str) -> float:
+        """Calculate ETH spent - unified efficient approach"""
+        if not outgoing_transfers:
+            return 0.0
+        
+        # Currency conversion rates
+        spending_currencies = {
+            'ETH': 1.0,
+            'WETH': 1.0,
+            'USDT': 1/2400,  # ~$2400/ETH
+            'USDC': 1/2400,
+            'AERO': 1/4800,  # Base network token
+        }
+        
+        total_eth = 0.0
+        
+        # Step 1: Exact transaction match
+        for transfer in outgoing_transfers:
+            if transfer.get("hash") == target_tx:
+                asset = transfer.get("asset", "")
+                if asset in spending_currencies:
+                    try:
+                        amount = float(transfer.get("value", "0"))
+                        total_eth += amount * spending_currencies[asset]
+                    except (ValueError, TypeError):
+                        continue
+        
+        if total_eth > 0:
+            return total_eth
+        
+        # Step 2: Block-based matching
+        for transfer in outgoing_transfers:
+            if transfer.get("blockNum") == target_block:
+                asset = transfer.get("asset", "")
+                if asset in spending_currencies:
+                    try:
+                        amount = float(transfer.get("value", "0"))
+                        eth_equivalent = amount * spending_currencies[asset]
+                        if 0.0001 <= eth_equivalent <= 50.0:
+                            total_eth += eth_equivalent
+                    except (ValueError, TypeError):
+                        continue
+        
+        if total_eth > 0:
+            return total_eth
+        
+        # Step 3: Proximity matching (within 5 blocks)
         try:
-            checksum_address = Web3.to_checksum_address(contract_address)
-            contract = w3.eth.contract(address=checksum_address, abi=ERC20_ABI)
-            
-            metadata = {}
-            
-            # Get token info safely
+            target_block_num = int(target_block, 16) if target_block.startswith('0x') else int(target_block)
+        except (ValueError, TypeError):
+            return 0.0
+        
+        proximity_values = []
+        for transfer in outgoing_transfers:
+            transfer_block = transfer.get("blockNum", "0x0")
             try:
-                metadata['symbol'] = contract.functions.symbol().call()
-            except:
-                metadata['symbol'] = 'UNKNOWN'
-            
-            try:
-                metadata['name'] = contract.functions.name().call()
-            except:
-                metadata['name'] = 'Unknown Token'
-            
-            try:
-                metadata['decimals'] = contract.functions.decimals().call()
-            except:
-                metadata['decimals'] = 18
-            
-            try:
-                total_supply_raw = contract.functions.totalSupply().call()
-                metadata['total_supply'] = total_supply_raw / (10 ** metadata['decimals'])
-            except:
-                metadata['total_supply'] = 0
-            
-            # Get contract age
-            metadata['contract_age'] = await self._get_contract_age(checksum_address, network, w3)
-            
-            # Check verification
-            metadata['is_verified'] = await self._check_contract_verification(checksum_address, w3)
-            
-            # Cache the result
-            self.token_metadata_cache[cache_key] = {
-                'data': metadata,
-                'timestamp': datetime.now()
-            }
-            
-            logger.info(f"🔷 Retrieved Web3 metadata for {metadata['symbol']}")
-            return metadata
-            
-        except Exception as e:
-            logger.debug(f"Error getting token metadata: {e}")
-            return {}
+                transfer_block_num = int(transfer_block, 16) if transfer_block.startswith('0x') else int(transfer_block)
+                if abs(transfer_block_num - target_block_num) <= 5:
+                    asset = transfer.get("asset", "")
+                    if asset in spending_currencies:
+                        amount = float(transfer.get("value", "0"))
+                        eth_equivalent = amount * spending_currencies[asset]
+                        if 0.0001 <= eth_equivalent <= 50.0:
+                            proximity_values.append(eth_equivalent)
+            except (ValueError, TypeError):
+                continue
+        
+        return sum(proximity_values)
     
-    async def _get_contract_age(self, contract_address: str, network: str, w3: Web3) -> Dict:
-        """Get contract creation time"""
+    def _calculate_eth_received(self, incoming_transfers: List[Dict], 
+                              target_tx: str, target_block: str) -> float:
+        """Calculate ETH received for sells - unified approach"""
+        if not incoming_transfers:
+            return 0.0
+        
+        # Currencies representing ETH value received
+        receiving_currencies = {
+            'ETH': 1.0,
+            'WETH': 1.0,
+            'USDT': 1/2400,
+            'USDC': 1/2400,
+            'USDC.E': 1/2400,
+            'DAI': 1/2400,
+            'AERO': 1/4800,
+            'FRAX': 1/2400,
+            'LUSD': 1/2400,
+        }
+        
+        # Step 1: Exact transaction match
+        total_eth = 0.0
+        for transfer in incoming_transfers:
+            if transfer.get("hash") == target_tx:
+                asset = transfer.get("asset", "")
+                if asset in receiving_currencies:
+                    try:
+                        amount = float(transfer.get("value", "0"))
+                        total_eth += amount * receiving_currencies[asset]
+                    except (ValueError, TypeError):
+                        continue
+        
+        if total_eth > 0:
+            return total_eth
+        
+        # Step 2: Block proximity matching (expanded range for sells)
         try:
-            # Simple approximation - check recent blocks
-            current_block = w3.eth.block_number
-            
-            # Check if contract exists
-            code = w3.eth.get_code(contract_address)
-            if not code or code == b'':
-                return {}
-            
-            # Approximate age (simplified)
-            blocks_to_check = 100000  # About 2 weeks on Ethereum
-            old_block = max(0, current_block - blocks_to_check)
-            
+            target_block_num = int(target_block, 16) if target_block.startswith('0x') else int(target_block)
+        except (ValueError, TypeError):
+            return 0.0
+        
+        proximity_values = []
+        for transfer in incoming_transfers:
+            transfer_block = transfer.get("blockNum", "0x0")
             try:
-                old_code = w3.eth.get_code(contract_address, old_block)
-                if old_code and old_code != b'':
-                    # Contract is older than checked range
-                    return {'age_hours': blocks_to_check * 12 / 3600}  # Approximate
-            except:
-                pass
-            
-            # Contract is relatively new
-            return {'age_hours': 24}  # Default to 1 day
-            
-        except Exception as e:
-            logger.debug(f"Error getting contract age: {e}")
-            return {}
+                transfer_block_num = int(transfer_block, 16) if transfer_block.startswith('0x') else int(transfer_block)
+                if abs(transfer_block_num - target_block_num) <= 10:  # Expanded range for sells
+                    asset = transfer.get("asset", "")
+                    if asset in receiving_currencies:
+                        amount = float(transfer.get("value", "0"))
+                        eth_equivalent = amount * receiving_currencies[asset]
+                        if 0.00001 <= eth_equivalent <= 100.0:  # Lower threshold for sells
+                            proximity_values.append(eth_equivalent)
+            except (ValueError, TypeError):
+                continue
+        
+        if proximity_values:
+            return sum(proximity_values)
+        
+        # Step 3: Fallback - find any ETH receipts
+        all_eth_received = []
+        for transfer in incoming_transfers:
+            asset = transfer.get("asset", "")
+            if asset in receiving_currencies:
+                try:
+                    amount = float(transfer.get("value", "0"))
+                    eth_equivalent = amount * receiving_currencies[asset]
+                    if 0.000001 <= eth_equivalent <= 50.0:
+                        all_eth_received.append(eth_equivalent)
+                except (ValueError, TypeError):
+                    continue
+        
+        if all_eth_received:
+            # Use the largest receipt as most likely sell proceeds
+            return max(all_eth_received)
+        
+        return 0.0
     
-    async def _check_contract_verification(self, contract_address: str, w3: Web3) -> bool:
-        """Check if contract appears to be verified"""
-        
-        # Check cache
-        if contract_address in self.contract_verification_cache:
-            return self.contract_verification_cache[contract_address]
-        
-        try:
-            code = w3.eth.get_code(contract_address)
-            
-            if not code or len(code) < 100:
-                verified = False
-            else:
-                # Simple heuristic - verified contracts tend to be larger
-                verified = len(code) > 1000
-            
-            # Cache result
-            self.contract_verification_cache[contract_address] = verified
-            return verified
-            
-        except Exception as e:
-            logger.debug(f"Error checking verification: {e}")
-            return False
-    
-    async def check_honeypot_web3(self, contract_address: str, network: str) -> Dict:
-        """Check for honeypot characteristics"""
-        
-        # Check cache
-        cache_key = f"{network}:{contract_address}"
-        if cache_key in self.honeypot_cache:
-            return self.honeypot_cache[cache_key]
-        
-        if not self.web3_enabled:
-            return {'risk_score': 0, 'is_honeypot': False}
-        
-        w3 = self.w3_connections.get(network)
-        if not w3:
-            return {'risk_score': 0, 'is_honeypot': False}
-        
-        try:
-            code = w3.eth.get_code(Web3.to_checksum_address(contract_address))
-            
-            if not code:
-                return {'risk_score': 0, 'is_honeypot': False}
-            
-            code_hex = code.hex().lower()
-            risk_score = 0
-            flags = []
-            
-            # Check for red flags
-            if 'selfdestruct' in code_hex:
-                risk_score += 0.3
-                flags.append('Self-destruct')
-            
-            if 'pause' in code_hex:
-                risk_score += 0.2
-                flags.append('Pausable')
-            
-            if 'blacklist' in code_hex or 'whitelist' in code_hex:
-                risk_score += 0.3
-                flags.append('Access list')
-            
-            if 'onlyowner' in code_hex:
-                risk_score += 0.1
-                flags.append('Owner controls')
-            
-            result = {
-                'risk_score': min(risk_score, 1.0),
-                'is_honeypot': risk_score >= 0.5,
-                'flags': flags
-            }
-            
-            # Cache result
-            self.honeypot_cache[cache_key] = result
-            return result
-            
-        except Exception as e:
-            logger.debug(f"Error checking honeypot: {e}")
-            return {'risk_score': 0, 'is_honeypot': False}
-    
-    async def enrich_purchase_with_web3(self, purchase: Purchase, network: str) -> Purchase:
-        """Add Web3 data to a purchase"""
-        
-        if not self.web3_enabled:
-            return purchase
-        
-        contract_address = purchase.web3_analysis.get('contract_address', '') if purchase.web3_analysis else ''
-        
-        if not contract_address:
-            return purchase
-        
-        try:
-            # Get token metadata
-            metadata = await self.get_token_metadata_web3(contract_address, network)
-            
-            # Check honeypot risk
-            honeypot_check = await self.check_honeypot_web3(contract_address, network)
-            
-            # Update web3_analysis
-            if not purchase.web3_analysis:
-                purchase.web3_analysis = {}
-            
-            purchase.web3_analysis.update({
-                'token_name': metadata.get('name'),
-                'token_symbol': metadata.get('symbol'),
-                'decimals': metadata.get('decimals'),
-                'total_supply': metadata.get('total_supply'),
-                'is_verified': metadata.get('is_verified', False),
-                'token_age_hours': metadata.get('contract_age', {}).get('age_hours'),
-                'honeypot_risk': honeypot_check.get('risk_score', 0),
-                'honeypot_flags': honeypot_check.get('flags', []),
-                'is_potential_honeypot': honeypot_check.get('is_honeypot', False),
-                'web3_enriched': True,
-                'enrichment_timestamp': datetime.now().isoformat()
-            })
-            
-            logger.debug(f"🔷 Enriched {metadata.get('symbol', 'UNKNOWN')} with Web3 data")
-            
-        except Exception as e:
-            logger.error(f"Error enriching with Web3: {e}")
-        
-        return purchase
-    
-    # OVERRIDE key methods to add Web3 enrichment
+    # ============================================================================
+    # MAIN PROCESSING METHODS - UNIFIED
+    # ============================================================================
     
     async def process_transfers_to_purchases(self, wallets: List[WalletInfo], 
                                            all_transfers: Dict, network: str,
                                            store_data: bool = False) -> List[Purchase]:
-        """
-        Enhanced version that adds Web3 enrichment to the existing method
-        Calls parent method first, then enriches with Web3 data
-        """
+        """Process transfers to purchases - unified BUY analysis"""
+        purchases = []
+        all_transfer_records = []
+        wallet_scores = {w.address: w.score for w in wallets}
         
-        # Call parent method to get all existing functionality
-        purchases = await super().process_transfers_to_purchases(wallets, all_transfers, network, store_data)
+        logger.info(f"Processing {len(wallets)} wallets for BUY analysis on {network}")
+        logger.info(f"Storage: {'ENABLED' if store_data else 'DISABLED'}")
         
-        # Add Web3 enrichment if enabled
-        if self.web3_enabled and purchases:
-            logger.info(f"🔷 Adding Web3 enrichment to {len(purchases)} purchases...")
+        for wallet in wallets:
+            address = wallet.address
+            transfers = all_transfers.get(address, {"incoming": [], "outgoing": []})
             
-            enriched_purchases = []
-            enriched_count = 0
+            incoming = transfers.get('incoming', [])
+            outgoing = transfers.get('outgoing', [])
             
-            for purchase in purchases:
-                enriched = await self.enrich_purchase_with_web3(purchase, network)
-                enriched_purchases.append(enriched)
+            # Process INCOMING transfers as potential BUYS
+            for transfer in incoming:
+                try:
+                    asset = transfer.get("asset")
+                    if not asset or asset == "ETH":
+                        continue
+                    
+                    amount = float(transfer.get("value", "0"))
+                    if amount <= 0:
+                        continue
+                    
+                    contract_address = self.extract_contract_address(transfer)
+                    tx_hash = transfer.get("hash", "")
+                    block_num = transfer.get("blockNum", "0x0")
+                    block_number = int(block_num, 16) if block_num != "0x0" else 0
+                    
+                    # Calculate ETH spent
+                    eth_spent = self._calculate_eth_spent(outgoing, tx_hash, block_num)
+                    
+                    # Create transfer record for storage (if enabled)
+                    if store_data:
+                        transfer_record = Transfer(
+                            wallet_address=address,
+                            token_address=contract_address,
+                            transfer_type=TransferType.BUY,
+                            timestamp=self._parse_timestamp(transfer, block_number),
+                            cost_in_eth=eth_spent,
+                            transaction_hash=tx_hash,
+                            block_number=block_number,
+                            token_amount=amount,
+                            token_symbol=asset,
+                            network=network,
+                            platform="DEX",
+                            wallet_sophistication_score=wallet_scores.get(address, 0)
+                        )
+                        all_transfer_records.append(transfer_record)
+                    
+                    # Create purchase for analysis (always done)
+                    if not self.is_excluded_token(asset, contract_address) and eth_spent >= 0.00001:
+                        purchase = Purchase(
+                            transaction_hash=tx_hash,
+                            token_bought=asset,
+                            amount_received=amount,
+                            eth_spent=eth_spent,
+                            wallet_address=address,
+                            platform="DEX",
+                            block_number=block_number,
+                            timestamp=self._parse_timestamp(transfer, block_number),
+                            sophistication_score=wallet_scores.get(address, 0),
+                            web3_analysis={
+                                "contract_address": contract_address,
+                                "ca": contract_address,
+                                "token_symbol": asset,
+                                "network": network
+                            }
+                        )
+                        purchases.append(purchase)
                 
-                if enriched.web3_analysis and enriched.web3_analysis.get('web3_enriched'):
-                    enriched_count += 1
-            
-            logger.info(f"🔷 Web3 enrichment complete: {enriched_count}/{len(purchases)} enriched")
-            return enriched_purchases
+                except Exception as e:
+                    logger.debug(f"Error processing incoming transfer: {e}")
+                    continue
+        
+        # Store transfers to BigQuery if enabled
+        if store_data and self.bigquery_transfer_service and all_transfer_records:
+            try:
+                stored_count = await self.bigquery_transfer_service.store_transfers_batch(all_transfer_records)
+                self._last_stored_count = stored_count
+                self.stats['transfers_stored'] = stored_count
+                logger.info(f"✅ Stored {stored_count} transfer records to BigQuery")
+            except Exception as e:
+                logger.error(f"❌ Failed to store transfers: {e}")
+                self._last_stored_count = 0
+        else:
+            self._last_stored_count = 0
+            if store_data:
+                logger.warning("⚠️ Storage requested but not available")
+        
+        self.stats['transfers_processed'] = len(all_transfer_records)
+        
+        # Log contract address extraction
+        ca_count = sum(1 for p in purchases if p.web3_analysis and p.web3_analysis.get('contract_address'))
+        logger.info(f"BUY: {len(purchases)} purchases, {ca_count} with contract addresses")
         
         return purchases
     
     async def process_transfers_to_sells(self, wallets: List[WalletInfo], 
                                        all_transfers: Dict, network: str,
                                        store_data: bool = False) -> List[Purchase]:
-        """
-        Enhanced version for sells with Web3 enrichment
-        """
+        """Process transfers to sells - unified SELL analysis"""
+        sells = []
+        all_transfer_records = []
+        wallet_scores = {w.address: w.score for w in wallets}
         
-        # Call parent method
-        sells = await super().process_transfers_to_sells(wallets, all_transfers, network, store_data)
+        logger.info(f"Processing {len(wallets)} wallets for SELL analysis on {network}")
         
-        # Add Web3 enrichment if enabled
-        if self.web3_enabled and sells:
-            logger.info(f"🔷 Adding Web3 enrichment to {len(sells)} sells...")
+        for wallet in wallets:
+            address = wallet.address
+            transfers = all_transfers.get(address, {"incoming": [], "outgoing": []})
             
-            enriched_sells = []
-            enriched_count = 0
+            outgoing = transfers.get('outgoing', [])
+            incoming = transfers.get('incoming', [])
             
-            for sell in sells:
-                enriched = await self.enrich_purchase_with_web3(sell, network)
-                enriched_sells.append(enriched)
+            # Process OUTGOING transfers as potential SELLS
+            for transfer in outgoing:
+                try:
+                    asset = transfer.get("asset")
+                    if not asset or asset == "ETH":
+                        continue
+                    
+                    amount_sold = float(transfer.get("value", "0"))
+                    if amount_sold <= 0:
+                        continue
+                    
+                    contract_address = self.extract_contract_address(transfer)
+                    tx_hash = transfer.get("hash", "")
+                    block_num = transfer.get("blockNum", "0x0")
+                    block_number = int(block_num, 16) if block_num != "0x0" else 0
+                    
+                    # Calculate ETH received from sell
+                    eth_received = self._calculate_eth_received(incoming, tx_hash, block_num)
+                    
+                    # Create transfer record for storage (if enabled)
+                    if store_data:
+                        transfer_record = Transfer(
+                            wallet_address=address,
+                            token_address=contract_address,
+                            transfer_type=TransferType.SELL,
+                            timestamp=self._parse_timestamp(transfer, block_number),
+                            cost_in_eth=eth_received,
+                            transaction_hash=tx_hash,
+                            block_number=block_number,
+                            token_amount=amount_sold,
+                            token_symbol=asset,
+                            network=network,
+                            platform="Transfer",
+                            wallet_sophistication_score=wallet_scores.get(address, 0)
+                        )
+                        all_transfer_records.append(transfer_record)
+                    
+                    # Create sell for analysis (always done)
+                    if not self.is_excluded_token(asset, contract_address) and eth_received >= 0.000001:
+                        sell = Purchase(
+                            transaction_hash=tx_hash,
+                            token_bought=asset,
+                            amount_received=eth_received,
+                            eth_spent=0,
+                            wallet_address=address,
+                            platform="Transfer",
+                            block_number=block_number,
+                            timestamp=self._parse_timestamp(transfer, block_number),
+                            sophistication_score=wallet_scores.get(address, 0),
+                            web3_analysis={
+                                "contract_address": contract_address,
+                                "ca": contract_address,
+                                "amount_sold": amount_sold,
+                                "is_sell": True,
+                                "token_symbol": asset,
+                                "network": network
+                            }
+                        )
+                        sells.append(sell)
                 
-                if enriched.web3_analysis and enriched.web3_analysis.get('web3_enriched'):
-                    enriched_count += 1
-            
-            logger.info(f"🔷 Web3 enrichment complete: {enriched_count}/{len(sells)} enriched")
-            return enriched_sells
+                except Exception as e:
+                    logger.debug(f"Error processing sell transfer: {e}")
+                    continue
         
+        # Store transfers if enabled
+        if store_data and self.bigquery_transfer_service and all_transfer_records:
+            try:
+                stored_count = await self.bigquery_transfer_service.store_transfers_batch(all_transfer_records)
+                self._last_stored_count = stored_count
+                logger.info(f"✅ Stored {stored_count} sell transfer records")
+            except Exception as e:
+                logger.error(f"❌ Failed to store sell transfers: {e}")
+                self._last_stored_count = 0
+        
+        logger.info(f"SELL: {len(sells)} sells identified")
         return sells
     
+    # ============================================================================
+    # ANALYSIS METHODS - UNIFIED
+    # ============================================================================
+    
     async def analyze_purchases_enhanced(self, purchases: List, analysis_type: str) -> Dict:
-        """
-        Enhanced analysis that includes Web3 data in scoring
-        Calls parent method and enhances the scores
-        """
+        """Enhanced analysis with AI - unified approach"""
+        if not purchases:
+            return self._create_empty_result(analysis_type)
         
-        # Call parent method for base analysis
-        result = await super().analyze_purchases_enhanced(purchases, analysis_type)
+        logger.info(f"🔍 Analyzing {len(purchases)} {analysis_type} transactions")
         
-        # Enhance scores with Web3 data if available
-        if self.web3_enabled and result.get('scores'):
-            logger.info("🔷 Enhancing scores with Web3 data...")
-            
-            for token, score_data in result['scores'].items():
-                # Find purchases for this token to get Web3 data
-                token_purchases = [p for p in purchases if p.token_bought == token]
+        # Step 1: Try AI analysis if available
+        if self._ai_enabled:
+            try:
+                ai_engine = self._get_ai_engine()
+                if ai_engine:
+                    logger.info("🤖 Running AI-enhanced analysis...")
+                    result = await ai_engine.complete_ai_analysis(purchases, analysis_type)
+                    
+                    if result.get('enhanced'):
+                        enhanced_result = self._create_result_with_contracts(result, purchases, analysis_type)
+                        self.stats['ai_enhanced_tokens'] = len(result.get('scores', {}))
+                        logger.info(f"✅ AI analysis complete: {self.stats['ai_enhanced_tokens']} tokens enhanced")
+                        return enhanced_result
+            except Exception as e:
+                logger.error(f"AI analysis failed: {e}")
+        
+        # Step 2: Fallback to basic analysis
+        logger.info("📊 Using basic analysis...")
+        basic_result = self._analyze_purchases_basic(purchases, analysis_type)
+        return self._create_result_with_contracts(basic_result, purchases, analysis_type)
+    
+    def _analyze_purchases_basic(self, purchases: List[Purchase], analysis_type: str) -> Dict:
+        """Basic analysis fallback - efficient pandas approach"""
+        try:
+            # Create DataFrame efficiently
+            data = []
+            for p in purchases:
+                eth_value = p.amount_received if analysis_type == 'sell' else p.eth_spent
+                contract_address = ''
+                if p.web3_analysis:
+                    contract_address = p.web3_analysis.get('contract_address', '') or p.web3_analysis.get('ca', '')
                 
-                if token_purchases and token_purchases[0].web3_analysis:
-                    web3_data = token_purchases[0].web3_analysis
-                    
-                    # Adjust score based on Web3 factors
-                    honeypot_risk = web3_data.get('honeypot_risk', 0)
-                    is_verified = web3_data.get('is_verified', False)
-                    token_age_hours = web3_data.get('token_age_hours', 999)
-                    
-                    # Apply Web3 adjustments
-                    if honeypot_risk > 0.5:
-                        score_data['total_score'] *= (1 - honeypot_risk * 0.5)  # Penalty
-                        score_data['honeypot_warning'] = True
-                    
-                    if is_verified:
-                        score_data['total_score'] *= 1.1  # 10% bonus
-                        score_data['verified'] = True
-                    
-                    if token_age_hours and token_age_hours < 24:
-                        score_data['new_token'] = True
-                        score_data['token_age_hours'] = token_age_hours
-                    
-                    # Add Web3 metadata to score
-                    score_data['web3_enhanced'] = True
-                    score_data['honeypot_risk'] = honeypot_risk
-                    score_data['token_name'] = web3_data.get('token_name')
-                    score_data['token_symbol'] = web3_data.get('token_symbol')
+                data.append({
+                    'token': p.token_bought,
+                    'eth_value': eth_value,
+                    'wallet': p.wallet_address,
+                    'score': p.sophistication_score or 0,
+                    'contract': contract_address
+                })
             
-            logger.info("🔷 Web3 score enhancement complete")
+            df = pd.DataFrame(data)
+            
+            # Aggregate by token
+            token_stats = df.groupby('token').agg({
+                'eth_value': ['sum', 'mean', 'count'],
+                'wallet': 'nunique',
+                'score': 'mean'
+            }).round(4)
+            
+            token_stats.columns = ['total_value', 'mean_value', 'tx_count', 'unique_wallets', 'avg_score']
+            
+            # Calculate scores
+            scores = {}
+            for token in token_stats.index:
+                stats = token_stats.loc[token]
+                
+                if analysis_type == 'sell':
+                    volume_score = min(stats['total_value'] * 100, 60)
+                    diversity_score = min(stats['unique_wallets'] * 10, 25)
+                    quality_score = min((stats['avg_score'] / 100) * 15, 15)
+                else:
+                    volume_score = min(stats['total_value'] * 50, 50)
+                    diversity_score = min(stats['unique_wallets'] * 8, 30)
+                    quality_score = min((stats['avg_score'] / 100) * 20, 20)
+                
+                total_score = volume_score + diversity_score + quality_score
+                
+                scores[token] = {
+                    'total_score': float(total_score),
+                    'volume_score': float(volume_score),
+                    'diversity_score': float(diversity_score),
+                    'quality_score': float(quality_score),
+                    'ai_enhanced': False,
+                    'confidence': 0.75
+                }
+            
+            return {
+                'scores': scores,
+                'analysis_type': analysis_type,
+                'enhanced': False
+            }
+            
+        except Exception as e:
+            logger.error(f"Basic analysis failed: {e}")
+            return {'scores': {}, 'analysis_type': analysis_type, 'enhanced': False}
+    
+    # ============================================================================
+    # UTILITY METHODS
+    # ============================================================================
+    
+    def _get_ai_engine(self):
+        """Lazy load AI engine"""
+        if self.ai_engine is None and self._ai_enabled:
+            try:
+                self.ai_engine = AdvancedCryptoAI()
+            except Exception as e:
+                logger.error(f"Failed to load AI engine: {e}")
+                self._ai_enabled = False
+        return self.ai_engine
+    
+    def _parse_timestamp(self, transfer: Dict, block_number: int = None) -> datetime:
+        """Parse timestamp from transfer - simplified"""
+        if 'metadata' in transfer and 'blockTimestamp' in transfer['metadata']:
+            try:
+                return datetime.fromisoformat(transfer['metadata']['blockTimestamp'].replace('Z', '+00:00'))
+            except:
+                pass
         
-        return result
+        # Fallback to current time
+        return datetime.utcnow()
+    
+    def _create_result_with_contracts(self, analysis_results: Dict, purchases: List[Purchase], analysis_type: str) -> Dict:
+        """Create result with contract addresses - unified approach"""
+        if not analysis_results or not analysis_results.get('scores'):
+            return self._create_empty_result(analysis_type)
+        
+        scores = analysis_results['scores']
+        ranked_tokens = []
+        
+        # Build contract lookup
+        contract_lookup = {}
+        purchase_stats = {}
+        
+        for purchase in purchases:
+            token = purchase.token_bought
+            
+            # Contract lookup
+            if purchase.web3_analysis:
+                ca = purchase.web3_analysis.get('contract_address', '') or purchase.web3_analysis.get('ca', '')
+                if ca:
+                    contract_lookup[token] = ca
+            
+            # Purchase stats
+            if token not in purchase_stats:
+                purchase_stats[token] = {'total_eth': 0, 'count': 0, 'wallets': set(), 'scores': []}
+            
+            if analysis_type == 'sell':
+                purchase_stats[token]['total_eth'] += purchase.amount_received
+            else:
+                purchase_stats[token]['total_eth'] += purchase.eth_spent
+            
+            purchase_stats[token]['count'] += 1
+            purchase_stats[token]['wallets'].add(purchase.wallet_address)
+            purchase_stats[token]['scores'].append(purchase.sophistication_score or 0)
+        
+        # Create ranked results
+        for token, score_data in scores.items():
+            stats = purchase_stats.get(token, {'total_eth': 0, 'count': 1, 'wallets': set(), 'scores': [0]})
+            contract_address = contract_lookup.get(token, '')
+            
+            # Token data
+            if analysis_type == 'sell':
+                token_data = {
+                    'total_eth_received': float(stats['total_eth']),
+                    'total_sells': int(stats['count']),
+                    'wallet_count': len(stats['wallets']),
+                    'avg_wallet_score': float(np.mean(stats['scores']) if stats['scores'] else 0),
+                    'contract_address': contract_address,
+                    'ca': contract_address,
+                    'sell_pressure_score': score_data['total_score'],
+                    'analysis_type': 'sell'
+                }
+            else:
+                token_data = {
+                    'total_eth_spent': float(stats['total_eth']),
+                    'total_purchases': int(stats['count']),
+                    'wallet_count': len(stats['wallets']),
+                    'avg_wallet_score': float(np.mean(stats['scores']) if stats['scores'] else 0),
+                    'contract_address': contract_address,
+                    'ca': contract_address,
+                    'alpha_score': score_data['total_score'],
+                    'analysis_type': 'buy'
+                }
+            
+            # Add AI enhancement data
+            token_data.update({
+                'ai_enhanced': score_data.get('ai_enhanced', False),
+                'confidence': score_data.get('confidence', 0.75),
+                'platforms': ['DEX'],
+                'web3_data': {
+                    'contract_address': contract_address,
+                    'ca': contract_address,
+                    'token_symbol': token,
+                    'network': 'ethereum'  # Default
+                }
+            })
+            
+            ranked_tokens.append((token, token_data, score_data['total_score'], score_data))
+        
+        # Sort by score
+        ranked_tokens.sort(key=lambda x: x[2], reverse=True)
+        
+        # Calculate totals
+        if analysis_type == 'sell':
+            total_eth = sum(p.amount_received for p in purchases)
+        else:
+            total_eth = sum(p.eth_spent for p in purchases)
+        
+        unique_tokens = len(set(p.token_bought for p in purchases))
+        
+        return {
+            'network': 'ethereum',  # Default
+            'analysis_type': analysis_type,
+            'total_transactions': len(purchases),
+            'unique_tokens': unique_tokens,
+            'total_eth_value': total_eth,
+            'ranked_tokens': ranked_tokens,
+            'performance_metrics': {
+                **self.get_processing_stats(),
+                'contract_addresses_extracted': sum(1 for _, data, _, _ in ranked_tokens if data.get('contract_address'))
+            },
+            'enhanced': analysis_results.get('enhanced', False),
+            'scores': scores
+        }
+    
+    def _create_empty_result(self, analysis_type: str) -> Dict:
+        """Create empty result"""
+        return {
+            'network': 'unknown',
+            'analysis_type': analysis_type,
+            'total_transactions': 0,
+            'unique_tokens': 0,
+            'total_eth_value': 0.0,
+            'ranked_tokens': [],
+            'performance_metrics': self.get_processing_stats(),
+            'enhanced': False,
+            'scores': {}
+        }
     
     def get_processing_stats(self) -> Dict:
-        """
-        Enhanced stats that includes Web3 metrics
-        """
-        
-        # Get parent stats
-        stats = super().get_processing_stats()
-        
-        # Add Web3 stats
-        stats.update({
-            'web3_enabled': self.web3_enabled,
-            'web3_networks': list(self.w3_connections.keys()) if self.web3_enabled else [],
-            'cached_tokens': len(self.token_metadata_cache),
-            'cached_verifications': len(self.contract_verification_cache),
-            'cached_honeypots': len(self.honeypot_cache),
-            'web3_enhancement': 'active' if self.web3_enabled else 'disabled'
-        })
-        
-        return stats
-    
-    def clear_web3_caches(self):
-        """Clear all Web3 caches"""
-        self.token_metadata_cache.clear()
-        self.contract_verification_cache.clear()
-        self.honeypot_cache.clear()
-        self.liquidity_cache.clear()
-        logger.info("🔷 Web3 caches cleared")
-    
+        """Get processing statistics"""
+        return {
+            'transfers_processed': self.stats.get('transfers_processed', 0),
+            'transfers_stored': self.stats.get('transfers_stored', 0),
+            'last_stored_count': self._last_stored_count,
+            'ai_enhanced_tokens': self.stats.get('ai_enhanced_tokens', 0),
+            'ai_available': self._ai_enabled,
+            'web3_available': self.web3_enabled,
+            'excluded_assets_count': len(self.excluded_assets),
+            'processing_mode': 'unified'
+        }
+
+# Export the unified processor
+__all__ = ['UnifiedDataProcessor']

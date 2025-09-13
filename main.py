@@ -1,8 +1,9 @@
 import os
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import traceback
+import hashlib
 
 try:
     import orjson as json
@@ -51,11 +52,78 @@ except Exception as e:
 # Global initialization flag
 _initialized = False
 
+# DUPLICATE PREVENTION SYSTEM
+_recent_requests = {}
+_cleanup_last = datetime.now()
+
+def generate_request_hash(request_data: dict) -> str:
+    """Generate a hash for the request to detect duplicates"""
+    # Create a consistent string from request parameters
+    key_params = {
+        'network': request_data.get('network', ''),
+        'analysis_type': request_data.get('analysis_type', ''),
+        'num_wallets': request_data.get('num_wallets', 0),
+        'days_back': request_data.get('days_back', 0)
+    }
+    
+    # Create hash from parameters
+    request_string = f"{key_params['network']}-{key_params['analysis_type']}-{key_params['num_wallets']}-{key_params['days_back']}"
+    return hashlib.md5(request_string.encode()).hexdigest()
+
+def cleanup_old_requests():
+    """Clean up old request tracking (older than 2 minutes)"""
+    global _recent_requests, _cleanup_last
+    
+    now = datetime.now()
+    
+    # Only cleanup every 30 seconds
+    if (now - _cleanup_last).seconds < 30:
+        return
+    
+    cutoff = now - timedelta(minutes=2)
+    keys_to_remove = []
+    
+    for key, timestamp in _recent_requests.items():
+        if timestamp < cutoff:
+            keys_to_remove.append(key)
+    
+    for key in keys_to_remove:
+        del _recent_requests[key]
+    
+    _cleanup_last = now
+    if len(keys_to_remove) > 0:
+        logger.info(f"🧹 Cleaned up {len(keys_to_remove)} old request hashes")
+
+def is_duplicate_request(request_data: dict) -> bool:
+    """Check if this is a duplicate request within the last 60 seconds"""
+    global _recent_requests
+    
+    # Clean up old requests first
+    cleanup_old_requests()
+    
+    # Generate hash for this request
+    request_hash = generate_request_hash(request_data)
+    now = datetime.now()
+    
+    # Check if we've seen this request recently
+    if request_hash in _recent_requests:
+        last_seen = _recent_requests[request_hash]
+        time_diff = (now - last_seen).total_seconds()
+        
+        if time_diff < 60:  # Within 60 seconds
+            logger.warning(f"🚫 DUPLICATE REQUEST BLOCKED: {request_hash} (last seen {time_diff:.1f}s ago)")
+            return True
+    
+    # Record this request
+    _recent_requests[request_hash] = now
+    logger.info(f"✅ New unique request: {request_hash}")
+    return False
+
 async def initialize_services():
     """Initialize all services once"""
     global _initialized
     if not _initialized:
-        logger.info("Initializing Cloud Function services with orjson...")
+        logger.info("Initializing Cloud Function services with orjson and duplicate prevention...")
         
         try:
             # Validate configuration
@@ -75,7 +143,7 @@ async def initialize_services():
             else:
                 logger.warning("Telegram not configured")
             
-            logger.info("Services initialized successfully with orjson performance boost")
+            logger.info("✅ Services initialized with orjson performance + duplicate prevention")
             _initialized = True
             
         except Exception as e:
@@ -86,9 +154,9 @@ async def initialize_services():
 
 @functions_framework.http
 def main(request: Request):
-    """Cloud Functions HTTP entry point with orjson performance"""
+    """Cloud Functions HTTP entry point with orjson performance and duplicate prevention"""
     
-    logger.info("🚀 Cloud Function started with orjson performance boost")
+    logger.info("🚀 Cloud Function started with orjson + duplicate prevention")
     
     # Initialize services on first request
     try:
@@ -125,9 +193,9 @@ def main(request: Request):
         if request.method == 'GET':
             return asyncio.run(handle_health_check(headers))
         
-        # Handle POST request (analysis)
+        # Handle POST request (analysis) with duplicate prevention
         if request.method == 'POST':
-            return asyncio.run(handle_analysis_request(request, headers))
+            return asyncio.run(handle_analysis_request_with_deduplication(request, headers))
         
         # Method not allowed
         return (
@@ -155,9 +223,9 @@ async def handle_health_check(headers):
         run_history = await analysis_handler.get_run_history(5)
         
         response = {
-            "message": "Crypto Analysis Function with orjson Performance",
+            "message": "Crypto Analysis Function with orjson Performance + Duplicate Prevention",
             "status": "healthy",
-            "version": "8.1.0-orjson",
+            "version": "8.2.0-orjson-dedup",
             "service": "crypto-analysis-cloud-function",
             "timestamp": datetime.utcnow().isoformat(),
             "initialized": _initialized,
@@ -166,8 +234,14 @@ async def handle_health_check(headers):
             "ai_library": "Enhanced AI",
             "architecture": "modular",
             "performance_boost": "orjson (3x faster JSON)",
+            "duplicate_prevention": "enabled (60s window)",
             "last_run_tracking": analysis_handler.last_run_tracker and analysis_handler.last_run_tracker.is_available(),
             "recent_runs": run_history,
+            "request_tracking": {
+                "active_requests": len(_recent_requests),
+                "cleanup_interval": "30s",
+                "duplicate_window": "60s"
+            },
             "services": {
                 "analysis_handler": "✓ Initialized" if _initialized else "✗ Not initialized",
                 "telegram_service": "✓ Configured" if telegram_service.is_configured() else "✗ Not configured",
@@ -175,6 +249,7 @@ async def handle_health_check(headers):
             },
             "features": [
                 "orjson Performance Boost (3x faster)",
+                "Duplicate Request Prevention (60s window)",
                 "Enhanced AI Analysis", 
                 "ML Anomaly Detection", 
                 "Sentiment Analysis",
@@ -200,8 +275,8 @@ async def handle_health_check(headers):
         }
         return (json_dumps(error_response), 500, headers)
 
-async def handle_analysis_request(request: Request, headers):
-    """Handle POST request for analysis with orjson parsing"""
+async def handle_analysis_request_with_deduplication(request: Request, headers):
+    """Handle POST request for analysis with orjson parsing and duplicate prevention"""
     try:
         # Get JSON data using orjson for 3x faster parsing
         request_json = request.get_json(silent=True)
@@ -211,6 +286,24 @@ async def handle_analysis_request(request: Request, headers):
                 400, 
                 headers
             )
+        
+        # DUPLICATE PREVENTION CHECK
+        if is_duplicate_request(request_json):
+            logger.warning("🚫 Rejecting duplicate request")
+            duplicate_response = {
+                "error": "Duplicate request detected",
+                "message": "This exact analysis was requested within the last 60 seconds. Please wait before retrying.",
+                "success": False,
+                "timestamp": datetime.utcnow().isoformat(),
+                "duplicate_prevention": True,
+                "retry_after_seconds": 60
+            }
+            return (json_dumps(duplicate_response), 429, headers)  # 429 = Too Many Requests
+        
+        # Log the unique request
+        request_hash = generate_request_hash(request_json)
+        logger.info(f"🚀 Processing unique request: {request_hash}")
+        logger.info(f"Request: {request_json.get('network')}-{request_json.get('analysis_type')} ({request_json.get('num_wallets', 0)} wallets)")
         
         # Override user settings with lower thresholds for more notifications
         if 'min_alpha_score' not in request_json:
@@ -225,11 +318,21 @@ async def handle_analysis_request(request: Request, headers):
             # Ensure we get more tokens
             request_json['max_tokens'] = max(int(request_json['max_tokens']), 5)
         
-        logger.info(f"Running analysis request with enhanced settings: min_score={request_json['min_alpha_score']}, max_tokens={request_json['max_tokens']}")
+        logger.info(f"Enhanced settings: min_score={request_json['min_alpha_score']}, max_tokens={request_json['max_tokens']}")
         
         # Delegate to analysis handler
         result = await analysis_handler.handle_analysis_request(request_json)
         status_code = 200 if result.get('success', False) else 500
+        
+        # Add deduplication info to response
+        result['duplicate_prevention'] = {
+            'request_hash': request_hash,
+            'processed_at': datetime.utcnow().isoformat(),
+            'duplicate_check_passed': True,
+            'active_requests_tracked': len(_recent_requests)
+        }
+        
+        logger.info(f"✅ Request completed: {request_hash} (status: {status_code})")
         
         # Use orjson for 3x faster response serialization
         return (json_dumps(result), status_code, headers)
@@ -248,6 +351,6 @@ async def handle_analysis_request(request: Request, headers):
 
 # For local testing
 if __name__ == "__main__":
-    logger.info("Starting local test with orjson performance boost")
+    logger.info("Starting local test with orjson performance boost + duplicate prevention")
     asyncio.run(initialize_services())
-    print("Function ready for local testing with 3x faster JSON processing.")
+    print("Function ready for local testing with 3x faster JSON processing and duplicate prevention.")

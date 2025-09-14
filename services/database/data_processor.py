@@ -10,14 +10,9 @@ from api.models.data_models import WalletInfo, Purchase, Transfer, TransferType
 
 logger = logging.getLogger(__name__)
 
-# Import AI system with error handling
-try:
-    from core.analysis.ai_system import AdvancedCryptoAI
-    AI_AVAILABLE = True
-    logger.info("🚀 AI system loaded successfully")
-except ImportError as e:
-    AI_AVAILABLE = False
-    logger.info(f"📊 AI system not available: {e}")
+# LAZY AI LOADING - No direct import to avoid circular dependencies
+AI_AVAILABLE = None  # Will be determined on first use
+AdvancedCryptoAI_CLASS = None
 
 # Optional Web3 integration
 try:
@@ -50,10 +45,11 @@ class UnifiedDataProcessor:
         # Services
         self.bigquery_transfer_service = None
         self._last_stored_count = 0
+        self._last_quality_score = 1.0
         
         # AI system (lazy loaded)
         self.ai_engine = None
-        self._ai_enabled = AI_AVAILABLE
+        self._ai_enabled = None  # Will be determined on first use
         
         # Web3 system (lazy loaded)
         self.w3_connections = {}
@@ -69,13 +65,81 @@ class UnifiedDataProcessor:
         }
         
         logger.info("🚀 Unified Data Processor initialized")
-        logger.info(f"  AI: {'✓ Available' if AI_AVAILABLE else '✗ Not available'}")
+        logger.info(f"  AI: ⏳ Will test on first use (lazy loading)")
         logger.info(f"  Web3: {'✓ Available' if WEB3_AVAILABLE else '✗ Not available'}")
     
     def set_transfer_service(self, transfer_service):
         """Set BigQuery transfer service"""
         self.bigquery_transfer_service = transfer_service
         logger.info("✅ BigQuery transfer service connected")
+    
+    def _test_ai_availability(self):
+        """Test AI availability on first use to avoid circular imports"""
+        global AI_AVAILABLE, AdvancedCryptoAI_CLASS
+        
+        if AI_AVAILABLE is not None:
+            return AI_AVAILABLE
+        
+        try:
+            logger.info("🔍 Testing AI system availability (lazy load)...")
+            
+            # Test core dependencies first
+            import sklearn
+            import numpy as np
+            import pandas as pd
+            logger.info("✅ AI dependencies available")
+            
+            # Now try to import the AI class
+            from core.analysis.ai_system import AdvancedCryptoAI
+            logger.info("✅ AI class imported successfully")
+            
+            # Test if it can be instantiated
+            test_instance = AdvancedCryptoAI()
+            logger.info("✅ AI instance created successfully")
+            
+            AI_AVAILABLE = True
+            AdvancedCryptoAI_CLASS = AdvancedCryptoAI
+            self._ai_enabled = True
+            
+            logger.info("🤖 AI system fully operational (lazy loaded)")
+            return True
+            
+        except ImportError as e:
+            logger.info(f"📊 AI dependencies missing: {e}")
+            AI_AVAILABLE = False
+            AdvancedCryptoAI_CLASS = None
+            self._ai_enabled = False
+            return False
+            
+        except Exception as e:
+            logger.warning(f"❌ AI system failed: {e}")
+            AI_AVAILABLE = False
+            AdvancedCryptoAI_CLASS = None
+            self._ai_enabled = False
+            return False
+
+    def _get_ai_engine(self):
+        """Lazy load AI engine to avoid circular imports"""
+        # Test availability on first use
+        if self._ai_enabled is None:
+            self._test_ai_availability()
+        
+        # If AI is not available, return None
+        if not self._ai_enabled:
+            return None
+        
+        # Create engine if needed
+        if self.ai_engine is None:
+            try:
+                logger.info("🤖 Creating AI engine instance...")
+                self.ai_engine = AdvancedCryptoAI_CLASS()
+                logger.info("✅ AI engine created successfully")
+            except Exception as e:
+                logger.error(f"❌ Failed to create AI engine: {e}")
+                self._ai_enabled = False
+                self.ai_engine = None
+        
+        return self.ai_engine
     
     # ============================================================================
     # TOKEN FILTERING & VALIDATION
@@ -490,25 +554,24 @@ class UnifiedDataProcessor:
     # ============================================================================
     
     async def analyze_purchases_enhanced(self, purchases: List, analysis_type: str) -> Dict:
-        """Enhanced analysis with AI - unified approach"""
+        """Enhanced analysis with AI - unified approach with lazy loading"""
         if not purchases:
             return self._create_empty_result(analysis_type)
         
         logger.info(f"🔍 Analyzing {len(purchases)} {analysis_type} transactions")
         
-        # Step 1: Try AI analysis if available
-        if self._ai_enabled:
+        # Step 1: Try AI analysis if available (lazy loaded)
+        ai_engine = self._get_ai_engine()
+        if ai_engine:
             try:
-                ai_engine = self._get_ai_engine()
-                if ai_engine:
-                    logger.info("🤖 Running AI-enhanced analysis...")
-                    result = await ai_engine.complete_ai_analysis(purchases, analysis_type)
-                    
-                    if result.get('enhanced'):
-                        enhanced_result = self._create_result_with_contracts(result, purchases, analysis_type)
-                        self.stats['ai_enhanced_tokens'] = len(result.get('scores', {}))
-                        logger.info(f"✅ AI analysis complete: {self.stats['ai_enhanced_tokens']} tokens enhanced")
-                        return enhanced_result
+                logger.info("🤖 Running AI-enhanced analysis...")
+                result = await ai_engine.complete_ai_analysis(purchases, analysis_type)
+                
+                if result.get('enhanced'):
+                    enhanced_result = self._create_result_with_contracts(result, purchases, analysis_type)
+                    self.stats['ai_enhanced_tokens'] = len(result.get('scores', {}))
+                    logger.info(f"✅ AI analysis complete: {self.stats['ai_enhanced_tokens']} tokens enhanced")
+                    return enhanced_result
             except Exception as e:
                 logger.error(f"AI analysis failed: {e}")
         
@@ -586,15 +649,22 @@ class UnifiedDataProcessor:
     # UTILITY METHODS
     # ============================================================================
     
-    def _get_ai_engine(self):
-        """Lazy load AI engine"""
-        if self.ai_engine is None and self._ai_enabled:
-            try:
-                self.ai_engine = AdvancedCryptoAI()
-            except Exception as e:
-                logger.error(f"Failed to load AI engine: {e}")
-                self._ai_enabled = False
-        return self.ai_engine
+    def _convert_numpy_types(self, obj):
+        """Convert numpy types to native Python types for JSON serialization"""
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {key: self._convert_numpy_types(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [self._convert_numpy_types(item) for item in obj]
+        elif isinstance(obj, tuple):
+            return tuple(self._convert_numpy_types(item) for item in obj)
+        else:
+            return obj
     
     def _parse_timestamp(self, transfer: Dict, block_number: int = None) -> datetime:
         """Parse timestamp from transfer - simplified"""
@@ -696,7 +766,7 @@ class UnifiedDataProcessor:
         
         unique_tokens = len(set(p.token_bought for p in purchases))
         
-        return {
+        result = {
             'network': 'ethereum',  # Default
             'analysis_type': analysis_type,
             'total_transactions': len(purchases),
@@ -710,6 +780,8 @@ class UnifiedDataProcessor:
             'enhanced': analysis_results.get('enhanced', False),
             'scores': scores
         }
+        
+        return self._convert_numpy_types(result)
     
     def _create_empty_result(self, analysis_type: str) -> Dict:
         """Create empty result"""
@@ -732,11 +804,125 @@ class UnifiedDataProcessor:
             'transfers_stored': self.stats.get('transfers_stored', 0),
             'last_stored_count': self._last_stored_count,
             'ai_enhanced_tokens': self.stats.get('ai_enhanced_tokens', 0),
-            'ai_available': self._ai_enabled,
+            'ai_available': self._ai_enabled if self._ai_enabled is not None else False,
             'web3_available': self.web3_enabled,
             'excluded_assets_count': len(self.excluded_assets),
             'processing_mode': 'unified'
         }
+    
+    # ============================================================================
+    # VALIDATION AND LOGGING METHODS
+    # ============================================================================
+    
+    async def validate_data_quality(self, purchases: List[Purchase]) -> Dict:
+        """Validate data quality and return quality report"""
+        if not purchases:
+            return {
+                'data_quality_score': 0.0,
+                'warnings': ['No purchases to validate'],
+                'total_purchases': 0,
+                'valid_purchases': 0,
+                'invalid_purchases': 0
+            }
+        
+        valid_count = 0
+        warnings = []
+        
+        # Validate each purchase
+        for purchase in purchases:
+            is_valid = True
+            
+            # Check required fields
+            if not purchase.token_bought:
+                warnings.append(f"Purchase missing token_bought")
+                is_valid = False
+                
+            if not purchase.transaction_hash:
+                warnings.append(f"Purchase missing transaction_hash")
+                is_valid = False
+                
+            # Check ETH values
+            if hasattr(purchase, 'eth_spent') and purchase.eth_spent < 0:
+                warnings.append(f"Negative ETH spent for {purchase.token_bought}")
+                is_valid = False
+                
+            if hasattr(purchase, 'amount_received') and purchase.amount_received < 0:
+                warnings.append(f"Negative amount received for {purchase.token_bought}")
+                is_valid = False
+            
+            if is_valid:
+                valid_count += 1
+        
+        # Calculate quality score
+        quality_score = valid_count / len(purchases) if purchases else 0
+        
+        # Store for later reference
+        self._last_quality_score = quality_score
+        
+        return {
+            'data_quality_score': quality_score,
+            'warnings': warnings[:10],  # Limit warnings
+            'total_purchases': len(purchases),
+            'valid_purchases': valid_count,
+            'invalid_purchases': len(purchases) - valid_count,
+            'quality_level': 'high' if quality_score >= 0.9 else 'medium' if quality_score >= 0.7 else 'low'
+        }
+    
+    def log_token_analysis_summary(self, purchases: List[Purchase], analysis_type: str):
+        """Log comprehensive token analysis summary"""
+        if not purchases:
+            logger.info(f"No {analysis_type} data to summarize")
+            return
+        
+        # Group by token for summary
+        token_groups = {}
+        total_eth = 0
+        
+        for purchase in purchases:
+            token = purchase.token_bought
+            if token not in token_groups:
+                token_groups[token] = {
+                    'count': 0,
+                    'eth_value': 0,
+                    'wallets': set(),
+                    'contracts': set()
+                }
+            
+            token_groups[token]['count'] += 1
+            token_groups[token]['wallets'].add(purchase.wallet_address)
+            
+            # ETH value based on analysis type
+            if analysis_type == 'sell':
+                eth_value = purchase.amount_received
+            else:
+                eth_value = purchase.eth_spent
+                
+            token_groups[token]['eth_value'] += eth_value
+            total_eth += eth_value
+            
+            # Contract address
+            if purchase.web3_analysis and purchase.web3_analysis.get('contract_address'):
+                token_groups[token]['contracts'].add(purchase.web3_analysis['contract_address'])
+        
+        # Log summary
+        logger.info(f"=== {analysis_type.upper()} ANALYSIS SUMMARY ===")
+        logger.info(f"Total transactions: {len(purchases)}")
+        logger.info(f"Unique tokens: {len(token_groups)}")
+        logger.info(f"Total ETH {'received' if analysis_type == 'sell' else 'spent'}: {total_eth:.6f}")
+        
+        # Top tokens by ETH value
+        top_tokens = sorted(token_groups.items(), key=lambda x: x[1]['eth_value'], reverse=True)[:5]
+        logger.info("Top tokens by ETH volume:")
+        for i, (token, data) in enumerate(top_tokens[:5]):
+            logger.info(f"  {i+1}. {token}: {data['eth_value']:.6f} ETH, {data['count']} txs, {len(data['wallets'])} wallets")
+        
+        # Contract address stats
+        tokens_with_contracts = sum(1 for data in token_groups.values() if data['contracts'])
+        logger.info(f"Tokens with contract addresses: {tokens_with_contracts}/{len(token_groups)}")
+        
+        logger.info("=" * (len(f"{analysis_type.upper()} ANALYSIS SUMMARY") + 6))
 
-# Export the unified processor
-__all__ = ['UnifiedDataProcessor']
+
+# Export both names for backward compatibility
+Web3DataProcessor = UnifiedDataProcessor  # Alias for backward compatibility
+__all__ = ['UnifiedDataProcessor', 'Web3DataProcessor']

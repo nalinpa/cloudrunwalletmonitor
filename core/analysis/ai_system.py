@@ -14,10 +14,14 @@ class AdvancedCryptoAI:
     """Streamlined AI system - same power, much cleaner code"""
     
     def __init__(self):
-        # Core ML models - keep the essentials
-        self.anomaly_detector = IsolationForest(contamination=0.1, random_state=42)
-        self.cluster_model = DBSCAN(eps=0.3, min_samples=3)
-        self.scaler = StandardScaler()
+        try:
+            self.anomaly_detector = IsolationForest(contamination=0.1, random_state=42)
+            self.cluster_model = DBSCAN(eps=0.3, min_samples=3)
+            self.scaler = StandardScaler()
+            logger.info("🤖 AI models initialized successfully")
+        except Exception as e:
+            logger.error(f"❌ AI model initialization failed: {e}")
+            raise
         
         # Simplified thresholds - easier to tune
         self.thresholds = {

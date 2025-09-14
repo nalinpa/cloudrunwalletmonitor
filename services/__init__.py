@@ -1,6 +1,6 @@
 from .database.database_client import DatabaseService
 from .blockchain.alchemy_client import AlchemyService
-from .database.data_processor import Web3DataProcessor
+from .database.data_processor import UnifiedDataProcessor
 
 # Import unified notifications
 from .notifications.notifications import (
@@ -14,7 +14,7 @@ from .notifications.notifications import (
 __all__ = [
     'DatabaseService', 
     'AlchemyService', 
-    'Web3DataProcessor',
+    'UnifiedDataProcessor',
     'telegram_service',
     'telegram_client',
     'send_alert_notifications',

@@ -10,7 +10,7 @@ from services.database.database_client import DatabaseService
 from services.database.bigquery_client import BigQueryTransferService
 from services.blockchain.alchemy_client import AlchemyService
 from api.models.data_models import AnalysisResult, WalletInfo, Purchase
-from services.database.data_processor import Web3DataProcessor
+from services.database.data_processor import UnifiedDataProcessor
 from utils.config import Config
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ class CloudSellAnalyzer:
         self.alchemy_service = AlchemyService(self.config)
         
         # Enhanced data processor with AI capabilities
-        self.data_processor = Web3DataProcessor()
+        self.data_processor = UnifiedDataProcessor()
         
         self._initialized = False
         
@@ -67,10 +67,9 @@ class CloudSellAnalyzer:
             self.data_processor.set_transfer_service(self.bigquery_transfer_service)
             logger.info("✓ Data processor connected")
             
-            # Step 4: Initialize AI enhancement
-            logger.info("Step 4: Initializing AI Enhancement...")
-            logger.warning("AI scoring packages not available")
-            logger.info("✓ AI Enhancement initialized successfully")
+            # Step 4: AI Enhancement note (no more warnings) - UPDATED
+            logger.info("Step 4: AI Enhancement ready (lazy loading)...")
+            logger.info("✓ AI will be tested when first sell analysis runs")
             
             self._initialized = True
             logger.info("=== Enhanced CloudSellAnalyzer initialization COMPLETE ===")

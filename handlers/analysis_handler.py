@@ -20,19 +20,18 @@ except ImportError:
 
 from utils.config import Config
 from services.tracker.last_run_tracker import LastRunTracker
-from services.notifications.notifications import telegram_service
 
 logger = logging.getLogger(__name__)
 
 class AnalysisHandler:
-    """Handle analysis requests with smart timing, lower thresholds, and orjson performance"""
+    """Handle analysis requests with smart timing, lower thresholds, orjson performance, and momentum tracking"""
     
     def __init__(self):
         self.config = Config()
         self.last_run_tracker: LastRunTracker = None
         self._analyzers = {}
         
-        # 🎯 ENHANCED NOTIFICATION SETTINGS - More alerts, lower barriers
+        # Enhanced notification settings - More alerts, lower barriers
         self.enhanced_notification_settings = {
             'default_min_alpha_score': 12.0,  # Lowered from 50.0
             'max_min_alpha_score': 30.0,      # Cap user input
@@ -43,16 +42,32 @@ class AnalysisHandler:
         }
         
         if ORJSON_AVAILABLE:
-            logger.info("🚀 Analysis handler initialized with orjson performance boost")
+            logger.info("Analysis handler initialized with orjson performance boost and momentum tracking")
         else:
-            logger.warning("⚠️ Analysis handler using standard json (consider installing orjson)")
+            logger.warning("Analysis handler using standard json (consider installing orjson)")
     
     async def initialize(self):
-        """Initialize the analysis handler"""
-        # Initialize last run tracker
-        self.last_run_tracker = LastRunTracker(self.config)
-        await self.last_run_tracker.initialize()
-        logger.info("Enhanced analysis handler initialized with lower notification thresholds")
+        """Initialize the analysis handler with momentum tracking"""
+        try:
+            # Initialize last run tracker
+            self.last_run_tracker = LastRunTracker(self.config)
+            await self.last_run_tracker.initialize()
+            logger.info("Last run tracker initialized")
+            
+            # Initialize momentum tracking for telegram service
+            try:
+                from services.notifications.notifications import telegram_service
+                await telegram_service.initialize_momentum_tracking(self.config)
+                logger.info("Momentum tracking initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize momentum tracking: {e}")
+                logger.warning("Continuing without momentum tracking - alerts will still work")
+            
+            logger.info("Enhanced analysis handler with momentum tracking initialized")
+            
+        except Exception as e:
+            logger.error(f"Analysis handler initialization failed: {e}")
+            raise
     
     async def get_analyzer(self, network: str, analysis_type: str):
         """Get or create analyzer instance with error handling"""
@@ -91,7 +106,7 @@ class AnalysisHandler:
         # If user set a very high threshold, bring it down
         if enhanced_min_score > settings['default_min_alpha_score'] * 2:
             enhanced_min_score = settings['default_min_alpha_score'] * 1.5
-            logger.info(f"📉 Lowered min_alpha_score from {original_min_score} to {enhanced_min_score} for more alerts")
+            logger.info(f"Lowered min_alpha_score from {original_min_score} to {enhanced_min_score} for more alerts")
         
         request_data['min_alpha_score'] = enhanced_min_score
         
@@ -102,19 +117,19 @@ class AnalysisHandler:
         # If user set too few tokens, increase it
         if enhanced_max_tokens < settings['default_max_tokens']:
             enhanced_max_tokens = settings['default_max_tokens']
-            logger.info(f"📈 Increased max_tokens from {original_max_tokens} to {enhanced_max_tokens} for more alerts")
+            logger.info(f"Increased max_tokens from {original_max_tokens} to {enhanced_max_tokens} for more alerts")
         
         request_data['max_tokens'] = enhanced_max_tokens
         
         # Always enable notifications
         request_data['notifications'] = True
         
-        logger.info(f"🎯 Enhanced notification settings: min_score={enhanced_min_score}, max_tokens={enhanced_max_tokens}")
+        logger.info(f"Enhanced notification settings: min_score={enhanced_min_score}, max_tokens={enhanced_max_tokens}")
         
         return request_data
     
     async def handle_analysis_request(self, request_data: Dict) -> Dict[str, Any]:
-        """Handle analysis request with enhanced notifications and orjson performance"""
+        """Handle analysis request with enhanced notifications, momentum tracking, and orjson performance"""
         try:
             # Apply enhanced notification settings
             request_data = self._apply_enhanced_notification_settings(request_data)
@@ -141,7 +156,7 @@ class AnalysisHandler:
             # Log the storage decision and enhanced settings
             storage_status = "ENABLED" if store_data else "DISABLED"
             logger.info(f"Transfer data storage: {storage_status}")
-            logger.info(f"🎯 Enhanced notifications: min_score={min_alpha_score}, max_tokens={max_tokens}")
+            logger.info(f"Enhanced notifications: min_score={min_alpha_score}, max_tokens={max_tokens}")
             
             # Calculate smart days_back
             if use_smart_timing and self.last_run_tracker and self.last_run_tracker.is_available():
@@ -163,6 +178,7 @@ class AnalysisHandler:
             # Test Telegram if notifications enabled
             telegram_status = None
             if send_notifications:
+                from services.notifications.notifications import telegram_service
                 telegram_status = await telegram_service.test_connection()
                 logger.info(f"Telegram status: {telegram_status}")
             
@@ -176,8 +192,9 @@ class AnalysisHandler:
             if debug_mode:
                 return self._handle_debug_mode(debug_info)
             
-            # Send enhanced start notification
+            # Send enhanced start notification with momentum tracking info
             if send_notifications and telegram_status and telegram_status.get('ready_for_notifications'):
+                from services.notifications.notifications import telegram_service
                 await telegram_service.send_start_notification(
                     network, analysis_type, num_wallets, days_back, 
                     use_smart_timing, max_tokens, min_alpha_score, store_data
@@ -185,7 +202,7 @@ class AnalysisHandler:
             
             # Run analysis with store_data flag
             try:
-                logger.info(f"Starting enhanced {analysis_type} analysis for {network} with orjson performance")
+                logger.info(f"Starting enhanced {analysis_type} analysis for {network} with orjson performance and momentum tracking")
                 analyzer = await self.get_analyzer(network, analysis_type)
                 
                 # Pass the store_data flag to the analyzer
@@ -201,12 +218,13 @@ class AnalysisHandler:
                 storage_msg = f", stored {result.performance_metrics.get('transfers_stored', 0)} transfers" if store_data else ", no data stored"
                 logger.info(f"Enhanced analysis complete - {result.total_transactions} transactions, {result.unique_tokens} tokens{storage_msg}")
                 
-                # Send enhanced notifications with lower thresholds
+                # Send enhanced notifications with momentum tracking and lower thresholds
                 if send_notifications and telegram_status and telegram_status.get('ready_for_notifications'):
                     try:
-                        await self._send_enhanced_notifications(result, network, max_tokens, min_alpha_score)
+                        from services.notifications.notifications import telegram_service
+                        await telegram_service.send_analysis_notifications(result, network, max_tokens, min_alpha_score)
                     except Exception as e:
-                        logger.error(f"Failed to send enhanced notifications: {e}")
+                        logger.error(f"Failed to send momentum-enhanced notifications: {e}")
                 
                 return result_dict
                 
@@ -230,48 +248,6 @@ class AnalysisHandler:
                 'timestamp': datetime.utcnow().isoformat(),
                 'traceback': traceback.format_exc()
             }
-    
-    async def _send_enhanced_notifications(self, result, network: str, max_tokens: int, min_alpha_score: float):
-        """Send enhanced notifications with smart threshold adjustment"""
-        try:
-            initial_qualifying_tokens = []
-            
-            # Check how many tokens qualify with current threshold
-            if result.ranked_tokens:
-                for token_data in result.ranked_tokens:
-                    if len(token_data) >= 3 and token_data[2] >= min_alpha_score:
-                        initial_qualifying_tokens.append(token_data)
-            
-            # 🎯 SMART THRESHOLD ADJUSTMENT - If no alerts, lower the threshold automatically
-            if len(initial_qualifying_tokens) == 0 and result.ranked_tokens:
-                # Find the highest scoring token
-                max_score = max([t[2] for t in result.ranked_tokens[:5]]) if result.ranked_tokens else 0
-                
-                # If there are tokens but none qualify, lower threshold to get some alerts
-                if max_score > 5.0:  # Only if there are decent tokens
-                    adjusted_threshold = max(max_score * 0.7, 8.0)  # 70% of max score or minimum 8.0
-                    logger.info(f"🎯 AUTO-ADJUSTING threshold from {min_alpha_score} to {adjusted_threshold:.1f} to generate alerts")
-                    
-                    # Re-filter with adjusted threshold
-                    for token_data in result.ranked_tokens:
-                        if len(token_data) >= 3 and token_data[2] >= adjusted_threshold:
-                            initial_qualifying_tokens.append(token_data)
-                    
-                    min_alpha_score = adjusted_threshold  # Update for logging
-            
-            # Send notifications using the standard service
-            await telegram_service.send_analysis_notifications(result, network, max_tokens, min_alpha_score)
-            
-            # Log enhancement info
-            logger.info(f"📱 Enhanced notifications sent: {len(initial_qualifying_tokens)} alerts (threshold: {min_alpha_score:.1f})")
-            
-        except Exception as e:
-            logger.error(f"Enhanced notification sending failed: {e}")
-            # Send fallback notification
-            try:
-                await telegram_service.send_message(f"❌ **Enhanced Notification Error**\n\nAnalysis completed but failed to send enhanced alerts: {str(e)}")
-            except:
-                pass
     
     def _validate_parameters(self, network: str, analysis_type: str) -> Dict[str, Any]:
         """Validate request parameters"""
@@ -299,7 +275,15 @@ class AnalysisHandler:
                          requested_days_back: float, actual_days_back: float,
                          use_smart_timing: bool, max_tokens: int, min_alpha_score: float,
                          telegram_status: Dict, store_data: bool) -> Dict:
-        """Build debug information with enhanced settings"""
+        """Build debug information with enhanced settings and momentum tracking"""
+        # Check if momentum tracking is available
+        momentum_available = False
+        try:
+            from services.notifications.notifications import telegram_service
+            momentum_available = bool(telegram_service.momentum_tracker)
+        except:
+            pass
+        
         return {
             'config_validation': 'passed',
             'requested_params': {
@@ -318,21 +302,23 @@ class AnalysisHandler:
                 'auto_threshold_adjustment': True,
                 'default_min_score': self.enhanced_notification_settings['default_min_alpha_score'],
                 'max_min_score': self.enhanced_notification_settings['max_min_alpha_score'],
-                'orjson_performance': ORJSON_AVAILABLE
+                'orjson_performance': ORJSON_AVAILABLE,
+                'momentum_tracking': momentum_available
             },
             'telegram_status': telegram_status,
-            'notifications_enabled': telegram_service.is_configured(),
+            'notifications_enabled': telegram_status.get('ready_for_notifications', False) if telegram_status else False,
             'bigquery_configured': bool(self.config.bigquery_project_id),
             'alchemy_configured': bool(self.config.alchemy_api_key),
             'ai_enhancement': 'available',
             'last_run_tracking': self.last_run_tracker and self.last_run_tracker.is_available(),
             'storage_enabled': store_data,
-            'performance_boost': f"orjson {'enabled' if ORJSON_AVAILABLE else 'not available'}"
+            'performance_boost': f"orjson {'enabled' if ORJSON_AVAILABLE else 'not available'}",
+            'momentum_tracking': momentum_available
         }
     
     async def _handle_debug_mode(self, debug_info: Dict) -> Dict[str, Any]:
-        """Handle debug mode request"""
-        logger.info("Running in enhanced debug mode - returning config info")
+        """Handle debug mode request with momentum tracking info"""
+        logger.info("Running in enhanced debug mode - returning config info with momentum tracking")
         
         if self.last_run_tracker and self.last_run_tracker.is_available():
             debug_info['run_history'] = await self.last_run_tracker.get_run_history(5)
@@ -346,13 +332,15 @@ class AnalysisHandler:
                 'lower_notification_thresholds': True,
                 'auto_threshold_adjustment': True,
                 'orjson_performance': ORJSON_AVAILABLE,
-                'smart_timing': True
+                'smart_timing': True,
+                'momentum_tracking': debug_info.get('momentum_tracking', False),
+                'web3_intelligence': True
             }
         }
     
     def _build_success_result(self, result, days_back: float, use_smart_timing: bool, 
                              debug_info: Dict, store_data: bool) -> Dict[str, Any]:
-        """Build successful analysis result with enhanced data"""
+        """Build successful analysis result with enhanced data and momentum tracking info"""
         return {
             'network': result.network,
             'analysis_type': result.analysis_type,
@@ -373,12 +361,14 @@ class AnalysisHandler:
                 'lower_thresholds': True,
                 'auto_adjustment': True,
                 'orjson_performance': ORJSON_AVAILABLE,
-                'contract_addresses': True
+                'contract_addresses': True,
+                'momentum_tracking': debug_info.get('momentum_tracking', False),
+                'web3_intelligence': True
             }
         }
     
     def _build_error_result(self, error_msg: str, days_back: float, debug_info: Dict, tb: str) -> Dict[str, Any]:
-        """Build error result"""
+        """Build error result with momentum tracking info"""
         return {
             'error': error_msg,
             'success': False,
@@ -387,7 +377,8 @@ class AnalysisHandler:
             'debug_info': debug_info,
             'traceback': tb,
             'enhanced_features': {
-                'orjson_performance': ORJSON_AVAILABLE
+                'orjson_performance': ORJSON_AVAILABLE,
+                'momentum_tracking': debug_info.get('momentum_tracking', False)
             }
         }
     
@@ -396,6 +387,48 @@ class AnalysisHandler:
         if self.last_run_tracker and self.last_run_tracker.is_available():
             return await self.last_run_tracker.get_run_history(limit)
         return []
+    
+    async def get_momentum_status(self) -> Dict:
+        """Get momentum tracking status"""
+        try:
+            from services.notifications.notifications import telegram_service
+            return {
+                'momentum_tracking_available': bool(telegram_service.momentum_tracker),
+                'momentum_tracker_initialized': telegram_service.momentum_tracker is not None
+            }
+        except Exception as e:
+            logger.error(f"Error checking momentum status: {e}")
+            return {
+                'momentum_tracking_available': False,
+                'error': str(e)
+            }
+    
+    async def cleanup(self):
+        """Enhanced cleanup with momentum tracking resources"""
+        try:
+            # Cleanup analyzers
+            for analyzer in self._analyzers.values():
+                if hasattr(analyzer, 'cleanup'):
+                    await analyzer.cleanup()
+            
+            # Cleanup last run tracker
+            if self.last_run_tracker:
+                # LastRunTracker doesn't have cleanup method in current implementation
+                pass
+            
+            # Cleanup momentum tracker
+            try:
+                from services.notifications.notifications import telegram_service
+                if telegram_service.momentum_tracker:
+                    await telegram_service.momentum_tracker.cleanup()
+                    logger.info("Momentum tracker cleaned up")
+            except Exception as e:
+                logger.error(f"Error cleaning up momentum tracker: {e}")
+            
+            logger.info("Enhanced analysis handler cleanup completed")
+            
+        except Exception as e:
+            logger.error(f"Error during enhanced cleanup: {e}")
 
 # Global instance
 analysis_handler = AnalysisHandler()

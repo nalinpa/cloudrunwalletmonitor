@@ -379,7 +379,7 @@ class TelegramService:
     async def initialize_momentum_tracking(self, config):
         """Initialize momentum tracking"""
         try:
-            from services.tracking.alert_momentum import AlertMomentumTracker
+            from services.tracker.alert_momentum import AlertMomentumTracker
             self.momentum_tracker = AlertMomentumTracker(config)
             await self.momentum_tracker.initialize()
             logger.info("Alert momentum tracking initialized")

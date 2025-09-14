@@ -154,24 +154,28 @@ def generate_action_links(token: str, contract_address: str, network: str) -> st
     return " | ".join(links)
 
 def format_enhanced_alert_message(alert: dict) -> str:
-    """Format enhanced alert with contract address and action links"""
+    """Format enhanced alert with Web3 intelligence and risk signals"""
     data = alert.get('data', {})
     alert_type = alert.get('alert_type', 'unknown')
     token = alert.get('token', 'UNKNOWN')
     network = alert.get('network', 'ethereum')
     confidence = alert.get('confidence', 'Unknown')
     
-    # Get contract address from data
+    # Get contract address and Web3 data
     contract_address = data.get('contract_address', '')
     if not contract_address:
-        # Try alternative locations
         contract_address = data.get('ca', '')
         if not contract_address and 'web3_data' in data:
             contract_address = data['web3_data'].get('contract_address', '')
     
+    # Extract Web3 intelligence from AI analysis
+    web3_data = data.get('web3_data', {})
+    ai_data = alert.get('ai_data', {}) if len(alert) > 3 else {}
+    
     # Get network info
     network_info = get_network_info(network)
     
+    # Build alert header
     if alert_type == 'new_token' or alert_type == 'buy':
         emoji = "🟢"
         alert_title = "BUY ALERT"
@@ -187,27 +191,122 @@ def format_enhanced_alert_message(alert: dict) -> str:
         wallet_count = data.get('wallet_count', data.get('unique_wallets', 0))
         tx_count = data.get('total_sells', data.get('transaction_count', 0))
     
-    # Enhanced message format
-    message = f"""{emoji} **{alert_title}**
-
-🪙 **Token:** `{token}`
-🌐 **Network:** {network_info['name']} ({network_info['symbol']})
-📊 **Score:** {score:.1f}
-💰 **ETH Volume:** {eth_value:.4f}
-👥 **Wallets:** {wallet_count}
-🔄 **Transactions:** {tx_count}
-🎯 **Confidence:** {confidence}
-
-📋 **Contract Address:**
-{format_contract_address(contract_address)}
-
-🔗 **Quick Actions:**
-{generate_action_links(token, contract_address, network)}
-
-⏰ {datetime.now().strftime('%H:%M:%S UTC')}
-🚀 Enhanced Monitoring v3.0"""
+    # Build Web3 intelligence section
+    web3_signals = []
+    risk_signals = []
     
-    return message.strip()
+    # Extract Web3 signals from AI data
+    if ai_data:
+        # Verification status
+        if ai_data.get('is_verified'):
+            web3_signals.append("✅ Contract Verified")
+        else:
+            risk_signals.append("⚠️ Unverified Contract")
+        
+        # Liquidity signals
+        if ai_data.get('has_liquidity'):
+            web3_signals.append("💧 Has Liquidity")
+        else:
+            risk_signals.append("🚨 No Liquidity Detected")
+        
+        # Smart money signals  
+        if ai_data.get('has_smart_money'):
+            web3_signals.append("🧠 Smart Money Active")
+        
+        # Honeypot risk
+        honeypot_risk = ai_data.get('honeypot_risk', 0)
+        if honeypot_risk > 0.5:
+            risk_signals.append(f"🍯 Honeypot Risk: {honeypot_risk:.0%}")
+        elif honeypot_risk > 0.2:
+            risk_signals.append(f"⚠️ Some Risk: {honeypot_risk:.0%}")
+    
+    # Extract additional Web3 data
+    if web3_data:
+        # Token age
+        token_age_hours = web3_data.get('token_age_hours')
+        if token_age_hours is not None:
+            if token_age_hours < 1:
+                risk_signals.append(f"🆕 Brand New (<1h)")
+            elif token_age_hours < 24:
+                web3_signals.append(f"🕐 {token_age_hours:.1f}h old")
+            elif token_age_hours < 168:  # 1 week
+                web3_signals.append(f"📅 {token_age_hours/24:.1f}d old")
+        
+        # Holder count
+        holder_count = web3_data.get('holder_count')
+        if holder_count is not None:
+            if holder_count < 50:
+                risk_signals.append(f"👥 Few Holders: {holder_count}")
+            else:
+                web3_signals.append(f"👥 {holder_count} Holders")
+    
+    # Extract AI analysis signals
+    if ai_data and 'ai_analyses' in str(ai_data):
+        # Whale coordination
+        if ai_data.get('whale_coordination_detected'):
+            web3_signals.append("🐋 Whale Coordination")
+        
+        # Pump signals
+        if ai_data.get('pump_signals_detected'):
+            web3_signals.append("🚀 Pump Signals")
+        
+        # Risk assessment
+        risk_level = ai_data.get('risk_level', '').upper()
+        if risk_level == 'HIGH':
+            risk_signals.append("🚨 High Risk")
+        elif risk_level == 'MEDIUM':
+            risk_signals.append("⚠️ Medium Risk")
+    
+    # Build the message
+    message_parts = [
+        f"{emoji} **{alert_title}**",
+        "",
+        f"🪙 **Token:** `{token}`",
+        f"🌐 **Network:** {network_info['name']} ({network_info['symbol']})",
+        f"📊 **Score:** {score:.1f}",
+        f"💰 **ETH Volume:** {eth_value:.4f}",
+        f"👥 **Wallets:** {wallet_count}",
+        f"🔄 **Transactions:** {tx_count}",
+        f"🎯 **Confidence:** {confidence}"
+    ]
+    
+    # Add Web3 intelligence section
+    if web3_signals or risk_signals:
+        message_parts.append("")
+        message_parts.append("🔍 **Web3 Intelligence:**")
+        
+        # Positive signals
+        if web3_signals:
+            for signal in web3_signals[:4]:  # Limit to 4 signals
+                message_parts.append(f"  {signal}")
+        
+        # Risk signals
+        if risk_signals:
+            for risk in risk_signals[:3]:  # Limit to 3 risks  
+                message_parts.append(f"  {risk}")
+    
+    # Contract address section
+    message_parts.extend([
+        "",
+        "📋 **Contract Address:**",
+        format_contract_address(contract_address)
+    ])
+    
+    # Action links
+    message_parts.extend([
+        "",
+        "🔗 **Quick Actions:**",
+        generate_action_links(token, contract_address, network)
+    ])
+    
+    # Footer
+    message_parts.extend([
+        "",
+        f"⏰ {datetime.now().strftime('%H:%M:%S UTC')}",
+        "🚀 Enhanced Web3 Monitoring v3.1"
+    ])
+    
+    return "\n".join(message_parts)
 
 def format_alert_message(alert: dict) -> str:
     """Enhanced format alert for Telegram with contract address and links"""
@@ -359,7 +458,7 @@ class TelegramService:
             }
     
     async def send_analysis_notifications(self, result, network: str, max_tokens: int = 7, min_alpha_score: float = 50.0):
-        """Send enhanced notifications for analysis results with contract addresses"""
+        """Send enhanced notifications with Web3 intelligence"""
         try:
             if not result.ranked_tokens:
                 await self.send_message(f"📊 **Analysis Complete** - No tokens found for {network.upper()}")
@@ -368,118 +467,77 @@ class TelegramService:
             # Filter tokens by score
             qualifying_tokens = []
             for token_data in result.ranked_tokens:
-                if len(token_data) >= 3 and token_data[2] >= min_alpha_score:
-                    qualifying_tokens.append(token_data)
+                if len(token_data) >= 4:  # Now expecting 4 elements (token, data, score, ai_data)
+                    token, data, score, ai_data = token_data[0], token_data[1], token_data[2], token_data[3]
+                    if score >= min_alpha_score:
+                        # Create enhanced alert with Web3 data
+                        alert = {
+                            'token': token,
+                            'data': data,
+                            'alert_type': result.analysis_type,
+                            'network': network,
+                            'confidence': ai_data.get('confidence', 'Unknown'),
+                            'ai_data': ai_data  # Include AI data for Web3 signals
+                        }
+                        qualifying_tokens.append(alert)
             
             limited_tokens = qualifying_tokens[:max_tokens]
-            network_info = get_network_info(network)
             
             if limited_tokens:
-                # Send individual enhanced notifications
-                for i, token_tuple in enumerate(limited_tokens):
-                    token = token_tuple[0]
-                    data = token_tuple[1] 
-                    score = token_tuple[2]
-                    
-                    # Extract contract address
-                    contract_address = data.get('contract_address', '')
-                    if not contract_address:
-                        contract_address = data.get('ca', '')
-                        if not contract_address and 'web3_data' in data:
-                            contract_address = data['web3_data'].get('contract_address', '')
-                    
-                    if result.analysis_type == "buy":
-                        emoji = "🟢"
-                        alert_title = "BUY ALERT"
-                        eth_value = data.get('total_eth_spent', 0)
-                        volume_label = "ETH Spent"
-                        tx_label = "Purchases"
-                        tx_count = data.get('total_purchases', 0)
-                    else:  # sell
-                        emoji = "🔴"
-                        alert_title = "SELL ALERT"
-                        eth_value = data.get('total_eth_received', 0)
-                        volume_label = "ETH Received"
-                        tx_label = "Sells"
-                        tx_count = data.get('total_sells', 0)
-                    
-                    message = f"""{emoji} **{alert_title}**
-
-🪙 **Token:** `{token}`
-🌐 **Network:** {network_info['name']} ({network_info['symbol']})
-📊 **Score:** {score:.1f}
-💰 **{volume_label}:** {eth_value:.4f}
-👥 **Wallets:** {data.get('wallet_count', 0)}
-🔄 **{tx_label}:** {tx_count}
-⭐ **Avg Wallet Score:** {data.get('avg_wallet_score', 0):.1f}
-
-📋 **Contract Address:**
-{format_contract_address(contract_address)}
-
-🔗 **Quick Actions:**
-{generate_action_links(token, contract_address, network)}
-
-🏆 **Rank:** #{i+1} of {len(limited_tokens)}
-⏰ {datetime.now().strftime('%H:%M:%S UTC')}
-🚀 Enhanced v3.0"""
-                    
-                    await self.send_message(message.strip())
-                    await asyncio.sleep(2)  # Rate limiting
+                # Send individual enhanced notifications with Web3 intelligence
+                for alert in limited_tokens:
+                    try:
+                        message = format_enhanced_alert_message(alert)
+                        await self.send_message(message)
+                        await asyncio.sleep(2)  # Rate limiting
+                    except Exception as e:
+                        logger.error(f"Failed to send Web3 enhanced alert: {e}")
                 
-                # Send enhanced summary with storage info
+                # Send summary
+                network_info = get_network_info(network)
                 storage_info = ""
                 if hasattr(result, 'performance_metrics'):
                     transfers_stored = result.performance_metrics.get('transfers_stored', 0)
                     if transfers_stored > 0:
                         storage_info = f"\n🗄️ **Stored:** {transfers_stored} transfer records"
                     else:
-                        storage_info = f"\n🗄️ **Storage:** Disabled (no data stored)"
+                        storage_info = f"\n🗄️ **Storage:** Disabled"
                 
                 summary_message = f"""📊 **{result.analysis_type.upper()} ANALYSIS SUMMARY**
 
-✅ **Alerts Sent:** {len(limited_tokens)}
-📈 **Total Tokens Found:** {result.unique_tokens}
-💰 **Total ETH Volume:** {result.total_eth_value:.4f}
-🔍 **Filtering:** min score {min_alpha_score}, max {max_tokens} tokens{storage_info}
+    ✅ **Web3 Enhanced Alerts:** {len(limited_tokens)}
+    📈 **Total Tokens Found:** {result.unique_tokens}
+    💰 **Total ETH Volume:** {result.total_eth_value:.4f}
+    🔍 **Filtering:** min score {min_alpha_score}, max {max_tokens} tokens{storage_info}
 
-🌐 **Network:** {network_info['name']} ({network_info['symbol']})
-🚀 **Enhanced Features:** Contract addresses, action links
-⏰ {datetime.now().strftime('%H:%M:%S UTC')}"""
+    🌐 **Network:** {network_info['name']} ({network_info['symbol']})
+    🚀 **Features:** Contract verification, risk analysis, liquidity detection
+    ⏰ {datetime.now().strftime('%H:%M:%S UTC')}"""
                 
                 await self.send_message(summary_message.strip())
-                logger.info(f"Sent {len(limited_tokens)} enhanced notifications for {network}")
+                logger.info(f"Sent {len(limited_tokens)} Web3 enhanced notifications for {network}")
                 
             else:
-                # No qualifying tokens
+                # No qualifying tokens - show what was found
                 max_score = max([t[2] for t in result.ranked_tokens[:3]]) if result.ranked_tokens else 0
-                
-                # Check storage status
-                storage_info = ""
-                if hasattr(result, 'performance_metrics'):
-                    transfers_stored = result.performance_metrics.get('transfers_stored', 0)
-                    if transfers_stored > 0:
-                        storage_info = f"\n🗄️ **Stored:** {transfers_stored} records"
-                    else:
-                        storage_info = f"\n🗄️ **Storage:** Disabled"
                 
                 message = f"""📊 **{result.analysis_type.upper()} ANALYSIS - NO ALERTS**
 
-🌐 **Network:** {network_info['name']} ({network_info['symbol']})
-📊 **Tokens Found:** {result.unique_tokens}
-🚫 **Above {min_alpha_score} Score:** 0
-📈 **Highest Score:** {max_score:.1f}{storage_info}
+    🌐 **Network:** {network_info['name']} ({network_info['symbol']})
+    📊 **Tokens Found:** {result.unique_tokens}
+    🚫 **Above {min_alpha_score} Score:** 0
+    📈 **Highest Score:** {max_score:.1f}
 
-💡 **Tip:** Lower min_alpha_score to see more alerts
-⏰ {datetime.now().strftime('%H:%M:%S UTC')}
-🚀 Enhanced v3.0"""
+    💡 **Tip:** Lower min_alpha_score for more alerts
+    ⏰ {datetime.now().strftime('%H:%M:%S UTC')}
+    🚀 Web3 Enhanced v3.1"""
                 
                 await self.send_message(message.strip())
-                logger.info(f"No qualifying tokens found for {network} (max score: {max_score:.1f})")
                 
         except Exception as e:
-            logger.error(f"Failed to send enhanced analysis notifications: {e}")
-            await self.send_message(f"❌ **Notification Error** - Analysis completed but failed to send enhanced alerts: {str(e)}")
-    
+            logger.error(f"Failed to send Web3 enhanced notifications: {e}")
+            await self.send_message(f"❌ **Notification Error** - Analysis completed but failed to send Web3 enhanced alerts: {str(e)}")
+        
     async def send_start_notification(self, network: str, analysis_type: str, num_wallets: int, 
                                     days_back: float, use_smart_timing: bool, max_tokens: int, 
                                     min_alpha_score: float, store_data: bool = False):

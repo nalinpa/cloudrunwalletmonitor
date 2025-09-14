@@ -50,7 +50,7 @@ class TelegramClient:
             
             headers = {
                 "Content-Type": "application/json",
-                "User-Agent": "CryptoMonitor/3.0",
+                "User-Agent": "CryptoMonitor/3.2",
                 "Accept": "application/json"
             }
             
@@ -303,7 +303,7 @@ def format_enhanced_alert_message(alert: dict) -> str:
     message_parts.extend([
         "",
         f"⏰ {datetime.now().strftime('%H:%M:%S UTC')}",
-        "🚀 Enhanced Web3 Monitoring v3.1"
+        "🚀 Enhanced Web3 Monitoring v3.2"
     ])
     
     return "\n".join(message_parts)
@@ -337,13 +337,15 @@ async def send_test_notification():
     """Send enhanced test notification"""
     test_message = f"""🧪 **ENHANCED TEST NOTIFICATION**
 
-✅ Crypto Monitor v3.0 is working!
+✅ Crypto Monitor v3.2 with Momentum Tracking!
 🕐 {datetime.now().strftime('%H:%M:%S UTC')}
 🚀 Features enabled:
   • Contract Address display
   • Quick action links
   • Enhanced formatting
   • Multi-network support
+  • Web3 intelligence
+  • Momentum tracking
 
 🔗 **Test Links:**
 [🦄 Uniswap](https://app.uniswap.org) | [📊 DexScreener](https://dexscreener.com) | [🐦 Twitter](https://twitter.com)
@@ -361,18 +363,29 @@ def check_notification_config():
     return bool(bot_token and chat_id and len(bot_token) > 40)
 
 # ============================================================================
-# ENHANCED TELEGRAM SERVICE - Updated for v3.0
+# ENHANCED TELEGRAM SERVICE WITH MOMENTUM TRACKING - v3.2
 # ============================================================================
 
 class TelegramService:
-    """Enhanced Telegram service v3.0 with contract addresses and action links"""
+    """Enhanced Telegram service v3.2 with momentum tracking and Web3 intelligence"""
     
     def __init__(self):
-        pass
+        self.momentum_tracker = None
         
     def is_configured(self) -> bool:
         """Check if Telegram is properly configured"""
         return check_notification_config()
+    
+    async def initialize_momentum_tracking(self, config):
+        """Initialize momentum tracking"""
+        try:
+            from services.tracking.alert_momentum import AlertMomentumTracker
+            self.momentum_tracker = AlertMomentumTracker(config)
+            await self.momentum_tracker.initialize()
+            logger.info("Alert momentum tracking initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize momentum tracking: {e}")
+            self.momentum_tracker = None
     
     async def send_message(self, message: str, parse_mode: str = "Markdown") -> bool:
         """Send message using telegram client"""
@@ -447,7 +460,8 @@ class TelegramService:
                     "chat_error": chat_error,
                     "ready_for_notifications": chat_accessible,
                     "enhanced_features": True,
-                    "version": "3.0"
+                    "momentum_tracking": bool(self.momentum_tracker),
+                    "version": "3.2"
                 }
                 
         except Exception as e:
@@ -458,7 +472,7 @@ class TelegramService:
             }
     
     async def send_analysis_notifications(self, result, network: str, max_tokens: int = 7, min_alpha_score: float = 50.0):
-        """Send enhanced notifications with Web3 intelligence"""
+        """Send enhanced notifications with momentum tracking and Web3 intelligence"""
         try:
             if not result.ranked_tokens:
                 await self.send_message(f"📊 **Analysis Complete** - No tokens found for {network.upper()}")
@@ -467,7 +481,7 @@ class TelegramService:
             # Filter tokens by score
             qualifying_tokens = []
             for token_data in result.ranked_tokens:
-                if len(token_data) >= 4:  # Now expecting 4 elements (token, data, score, ai_data)
+                if len(token_data) >= 4:
                     token, data, score, ai_data = token_data[0], token_data[1], token_data[2], token_data[3]
                     if score >= min_alpha_score:
                         # Create enhanced alert with Web3 data
@@ -477,67 +491,186 @@ class TelegramService:
                             'alert_type': result.analysis_type,
                             'network': network,
                             'confidence': ai_data.get('confidence', 'Unknown'),
-                            'ai_data': ai_data  # Include AI data for Web3 signals
+                            'ai_data': ai_data
                         }
                         qualifying_tokens.append(alert)
             
             limited_tokens = qualifying_tokens[:max_tokens]
             
             if limited_tokens:
-                # Send individual enhanced notifications with Web3 intelligence
+                # Send individual enhanced notifications with momentum context
                 for alert in limited_tokens:
                     try:
-                        message = format_enhanced_alert_message(alert)
+                        # Get momentum data for this token
+                        momentum_data = {}
+                        if self.momentum_tracker:
+                            momentum_data = await self.momentum_tracker.get_token_momentum(
+                                alert['token'], alert['network'], days_back=5
+                            )
+                        
+                        # Add momentum context to alert
+                        alert['momentum_data'] = momentum_data
+                        
+                        # Send enhanced message with momentum
+                        message = self._format_alert_with_momentum(alert)
                         await self.send_message(message)
+                        
+                        # Store alert for future momentum tracking
+                        if self.momentum_tracker:
+                            await self.momentum_tracker.store_alert(alert)
+                        
                         await asyncio.sleep(2)  # Rate limiting
+                        
                     except Exception as e:
-                        logger.error(f"Failed to send Web3 enhanced alert: {e}")
+                        logger.error(f"Failed to send momentum-enhanced alert: {e}")
                 
-                # Send summary
-                network_info = get_network_info(network)
-                storage_info = ""
-                if hasattr(result, 'performance_metrics'):
-                    transfers_stored = result.performance_metrics.get('transfers_stored', 0)
-                    if transfers_stored > 0:
-                        storage_info = f"\n🗄️ **Stored:** {transfers_stored} transfer records"
-                    else:
-                        storage_info = f"\n🗄️ **Storage:** Disabled"
+                # Send trending summary if we have momentum data
+                if self.momentum_tracker:
+                    await self._send_trending_summary(network)
                 
-                summary_message = f"""📊 **{result.analysis_type.upper()} ANALYSIS SUMMARY**
-
-    ✅ **Web3 Enhanced Alerts:** {len(limited_tokens)}
-    📈 **Total Tokens Found:** {result.unique_tokens}
-    💰 **Total ETH Volume:** {result.total_eth_value:.4f}
-    🔍 **Filtering:** min score {min_alpha_score}, max {max_tokens} tokens{storage_info}
-
-    🌐 **Network:** {network_info['name']} ({network_info['symbol']})
-    🚀 **Features:** Contract verification, risk analysis, liquidity detection
-    ⏰ {datetime.now().strftime('%H:%M:%S UTC')}"""
+                # Send regular summary
+                await self._send_analysis_summary(result, network, len(limited_tokens), min_alpha_score)
                 
-                await self.send_message(summary_message.strip())
-                logger.info(f"Sent {len(limited_tokens)} Web3 enhanced notifications for {network}")
+                logger.info(f"Sent {len(limited_tokens)} momentum-enhanced notifications for {network}")
                 
             else:
-                # No qualifying tokens - show what was found
-                max_score = max([t[2] for t in result.ranked_tokens[:3]]) if result.ranked_tokens else 0
-                
-                message = f"""📊 **{result.analysis_type.upper()} ANALYSIS - NO ALERTS**
-
-    🌐 **Network:** {network_info['name']} ({network_info['symbol']})
-    📊 **Tokens Found:** {result.unique_tokens}
-    🚫 **Above {min_alpha_score} Score:** 0
-    📈 **Highest Score:** {max_score:.1f}
-
-    💡 **Tip:** Lower min_alpha_score for more alerts
-    ⏰ {datetime.now().strftime('%H:%M:%S UTC')}
-    🚀 Web3 Enhanced v3.1"""
-                
-                await self.send_message(message.strip())
+                await self._send_no_alerts_message(result, network, min_alpha_score)
                 
         except Exception as e:
-            logger.error(f"Failed to send Web3 enhanced notifications: {e}")
-            await self.send_message(f"❌ **Notification Error** - Analysis completed but failed to send Web3 enhanced alerts: {str(e)}")
+            logger.error(f"Failed to send momentum-enhanced notifications: {e}")
+            await self.send_message(f"❌ **Notification Error** - Analysis completed but failed to send momentum-enhanced alerts: {str(e)}")
+    
+    def _format_alert_with_momentum(self, alert: dict) -> str:
+        """Format alert with momentum context"""
+        # Start with the enhanced Web3 alert
+        message = format_enhanced_alert_message(alert)
         
+        # Add momentum context if available
+        momentum_data = alert.get('momentum_data', {})
+        if momentum_data and momentum_data.get('alert_count', 0) > 1:
+            momentum_section = [
+                "",
+                "📈 **Momentum Detected:**"
+            ]
+            
+            alert_count = momentum_data.get('alert_count', 0)
+            buy_alerts = momentum_data.get('buy_alerts', 0)
+            sell_alerts = momentum_data.get('sell_alerts', 0)
+            momentum_score = momentum_data.get('momentum_score', 0)
+            
+            momentum_section.append(f"  🔄 {alert_count} alerts in 5 days")
+            
+            if buy_alerts and sell_alerts:
+                momentum_section.append(f"  ⚖️ {buy_alerts} buys, {sell_alerts} sells")
+            elif buy_alerts > sell_alerts:
+                momentum_section.append(f"  📈 {buy_alerts} buy signals")
+            elif sell_alerts > buy_alerts:
+                momentum_section.append(f"  📉 {sell_alerts} sell signals")
+            
+            if momentum_data.get('whale_activity'):
+                momentum_section.append("  🐋 Whale activity detected")
+            if momentum_data.get('pump_activity'):
+                momentum_section.append("  🚀 Pump signals active")
+            if momentum_data.get('smart_money_activity'):
+                momentum_section.append("  🧠 Smart money involved")
+            
+            # Add momentum strength indicator
+            if momentum_score >= 80:
+                momentum_section.append("  🔥 **STRONG MOMENTUM**")
+            elif momentum_score >= 50:
+                momentum_section.append("  ⭐ **Building Momentum**")
+            
+            # Insert momentum section before the contract address
+            lines = message.split('\n')
+            contract_index = next((i for i, line in enumerate(lines) if '**Contract Address:**' in line), len(lines))
+            
+            # Insert momentum section
+            lines[contract_index:contract_index] = momentum_section
+            message = '\n'.join(lines)
+        
+        return message
+    
+    async def _send_trending_summary(self, network: str):
+        """Send a summary of trending tokens"""
+        try:
+            if not self.momentum_tracker:
+                return
+            
+            trending = await self.momentum_tracker.get_trending_tokens(
+                network=network, hours_back=24, limit=5
+            )
+            
+            if trending:
+                trending_lines = ["🔥 **24H TRENDING TOKENS**", ""]
+                
+                for i, token_data in enumerate(trending[:3]):  # Top 3
+                    momentum_score = token_data['momentum_score']
+                    alert_count = token_data['alert_count']
+                    
+                    if momentum_score >= 80:
+                        strength = "🔥 STRONG"
+                    elif momentum_score >= 60:
+                        strength = "⭐ BUILDING" 
+                    else:
+                        strength = "📊 ACTIVE"
+                    
+                    trending_lines.append(
+                        f"{i+1}. **{token_data['token_symbol']}** - {strength} ({alert_count} alerts)"
+                    )
+                
+                trending_lines.extend([
+                    "",
+                    f"Based on {trending[0]['hours_tracked']}h momentum analysis",
+                    f"⏰ {datetime.now().strftime('%H:%M:%S UTC')}"
+                ])
+                
+                await self.send_message('\n'.join(trending_lines))
+                
+        except Exception as e:
+            logger.error(f"Failed to send trending summary: {e}")
+    
+    async def _send_analysis_summary(self, result, network: str, alerts_sent: int, min_alpha_score: float):
+        """Send analysis summary"""
+        network_info = get_network_info(network)
+        storage_info = ""
+        if hasattr(result, 'performance_metrics'):
+            transfers_stored = result.performance_metrics.get('transfers_stored', 0)
+            if transfers_stored > 0:
+                storage_info = f"\n🗄️ **Stored:** {transfers_stored} records"
+            else:
+                storage_info = f"\n🗄️ **Storage:** Disabled"
+        
+        summary_message = f"""📊 **{result.analysis_type.upper()} ANALYSIS COMPLETE**
+
+✅ **Momentum-Enhanced Alerts:** {alerts_sent}
+📈 **Total Tokens Found:** {result.unique_tokens}
+💰 **Total ETH Volume:** {result.total_eth_value:.4f}
+🔍 **Filter:** min score {min_alpha_score}{storage_info}
+
+🌐 **Network:** {network_info['name']} ({network_info['symbol']})
+🚀 **Features:** Web3 intel, momentum tracking, trending analysis
+⏰ {datetime.now().strftime('%H:%M:%S UTC')}"""
+        
+        await self.send_message(summary_message.strip())
+    
+    async def _send_no_alerts_message(self, result, network: str, min_alpha_score: float):
+        """Send message when no alerts qualify"""
+        network_info = get_network_info(network)
+        max_score = max([t[2] for t in result.ranked_tokens[:3]]) if result.ranked_tokens else 0
+        
+        message = f"""📊 **{result.analysis_type.upper()} ANALYSIS - NO ALERTS**
+
+🌐 **Network:** {network_info['name']} ({network_info['symbol']})
+📊 **Tokens Found:** {result.unique_tokens}
+🚫 **Above {min_alpha_score} Score:** 0
+📈 **Highest Score:** {max_score:.1f}
+
+💡 **Tip:** Lower min_alpha_score for more alerts
+⏰ {datetime.now().strftime('%H:%M:%S UTC')}
+🚀 Momentum-Enhanced v3.2"""
+        
+        await self.send_message(message.strip())
+
     async def send_start_notification(self, network: str, analysis_type: str, num_wallets: int, 
                                     days_back: float, use_smart_timing: bool, max_tokens: int, 
                                     min_alpha_score: float, store_data: bool = False):
@@ -546,7 +679,7 @@ class TelegramService:
         storage_info = f"🗄️ Storage: {'Enabled' if store_data else 'Disabled'}"
         network_info = get_network_info(network)
         
-        start_message = f"""🚀 **ENHANCED ANALYSIS STARTED v3.0**
+        start_message = f"""🚀 **ENHANCED ANALYSIS STARTED v3.2**
 
 **Network:** {network_info['name']} ({network_info['symbol']})
 **Type:** {analysis_type.capitalize()}
@@ -557,14 +690,15 @@ class TelegramService:
 **Filters:** max {max_tokens} tokens, ≥{min_alpha_score} score
 
 🚀 **Enhanced Features:**
-• Contract addresses for easy copying
+• Contract addresses with verification status
+• Web3 intelligence and risk analysis
+• Momentum tracking across 5 days
+• Trending token detection
 • Direct Uniswap trading links
-• DexScreener charts
-• Twitter/X search links
-• Block explorer links
+• DexScreener charts and Twitter search
 
 ⏰ {datetime.now().strftime('%H:%M:%S UTC')}
-🚀 Enhanced Monitoring v3.0"""
+🚀 Enhanced Web3 Monitoring v3.2"""
         
         await self.send_message(start_message)
 

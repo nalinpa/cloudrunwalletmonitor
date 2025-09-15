@@ -472,7 +472,7 @@ class TelegramService:
             }
     
     async def send_analysis_notifications(self, result, network: str, max_tokens: int = 7, min_alpha_score: float = 50.0):
-        """Send enhanced notifications with momentum tracking and Web3 intelligence"""
+        """Send notifications with fixed trending summary"""
         try:
             if not result.ranked_tokens:
                 await self.send_message(f"📊 **Analysis Complete** - No tokens found for {network.upper()}")
@@ -484,7 +484,6 @@ class TelegramService:
                 if len(token_data) >= 4:
                     token, data, score, ai_data = token_data[0], token_data[1], token_data[2], token_data[3]
                     if score >= min_alpha_score:
-                        # Create enhanced alert with Web3 data
                         alert = {
                             'token': token,
                             'data': data,
@@ -498,75 +497,108 @@ class TelegramService:
             limited_tokens = qualifying_tokens[:max_tokens]
             
             if limited_tokens:
-                # Send individual enhanced notifications with momentum context
+                # Send individual notifications with momentum context
                 for alert in limited_tokens:
                     try:
-                        # Get momentum data for this token
+                        # Get momentum data
                         momentum_data = {}
                         if self.momentum_tracker:
                             momentum_data = await self.momentum_tracker.get_token_momentum(
                                 alert['token'], alert['network'], days_back=5
                             )
                         
-                        # Add momentum context to alert
                         alert['momentum_data'] = momentum_data
                         
-                        # Send enhanced message with momentum
+                        # Send message with momentum
                         message = self._format_alert_with_momentum(alert)
                         await self.send_message(message)
                         
                         # Store alert for future momentum tracking
                         if self.momentum_tracker:
-                            await self.momentum_tracker.store_alert(alert)
+                            success = await self.momentum_tracker.store_alert(alert)
+                            if not success:
+                                logger.warning(f"Failed to store momentum alert for {alert['token']}")
                         
                         await asyncio.sleep(2)  # Rate limiting
                         
                     except Exception as e:
-                        logger.error(f"Failed to send momentum-enhanced alert: {e}")
+                        logger.error(f"Failed to send alert: {e}")
                 
-                # Send trending summary if we have momentum data
+                # FIXED: Send trending summary with error handling
                 if self.momentum_tracker:
-                    await self._send_trending_summary(network)
+                    try:
+                        await self._send_trending_summary(network)
+                        logger.info("Trending summary sent successfully")
+                    except Exception as e:
+                        logger.error(f"Failed to send trending summary: {e}")
+                        logger.error(f"Trending summary error traceback: {traceback.format_exc()}")
+                else:
+                    logger.warning("No momentum tracker available for trending summary")
                 
                 # Send regular summary
                 await self._send_analysis_summary(result, network, len(limited_tokens), min_alpha_score)
                 
-                logger.info(f"Sent {len(limited_tokens)} momentum-enhanced notifications for {network}")
+                logger.info(f"Sent {len(limited_tokens)} notifications for {network}")
                 
             else:
                 await self._send_no_alerts_message(result, network, min_alpha_score)
                 
         except Exception as e:
-            logger.error(f"Failed to send momentum-enhanced notifications: {e}")
-            await self.send_message(f"❌ **Notification Error** - Analysis completed but failed to send momentum-enhanced alerts: {str(e)}")
-    
+            logger.error(f"Failed to send notifications: {e}")
+            import traceback
+            logger.error(f"Notification error traceback: {traceback.format_exc()}")
+            await self.send_message(f"❌ **Notification Error** - Analysis completed but failed to send alerts: {str(e)}")
+
+
     def _format_alert_with_momentum(self, alert: dict) -> str:
-        """Format alert with momentum context"""
-        # Start with the enhanced Web3 alert
+        """Format alert with momentum context showing net scores"""
+        # Start with the existing alert format
         message = format_enhanced_alert_message(alert)
         
         # Add momentum context if available
         momentum_data = alert.get('momentum_data', {})
-        if momentum_data and momentum_data.get('alert_count', 0) > 1:
+        if momentum_data and momentum_data.get('net_momentum_score') is not None:
             momentum_section = [
                 "",
-                "📈 **Momentum Detected:**"
+                "📊 **Momentum Analysis:**"
             ]
             
+            net_score = momentum_data.get('net_momentum_score', 0)
+            momentum_strength = momentum_data.get('momentum_strength', 'NEUTRAL')
+            buy_momentum = momentum_data.get('buy_momentum', 0)
+            sell_momentum = momentum_data.get('sell_momentum', 0)
             alert_count = momentum_data.get('alert_count', 0)
-            buy_alerts = momentum_data.get('buy_alerts', 0)
-            sell_alerts = momentum_data.get('sell_alerts', 0)
-            momentum_score = momentum_data.get('momentum_score', 0)
             
-            momentum_section.append(f"  🔄 {alert_count} alerts in 5 days")
+            # Net momentum display
+            if net_score >= 50:
+                momentum_section.append(f"  🚀 **Net Score: +{net_score:.1f}** (VERY BULLISH)")
+            elif net_score >= 20:
+                momentum_section.append(f"  📈 **Net Score: +{net_score:.1f}** (BULLISH)")
+            elif net_score >= 5:
+                momentum_section.append(f"  ⬆️ **Net Score: +{net_score:.1f}** (SLIGHT BUY)")
+            elif net_score <= -50:
+                momentum_section.append(f"  📉 **Net Score: {net_score:.1f}** (STRONG SELL PRESSURE)")
+            elif net_score <= -20:
+                momentum_section.append(f"  ⬇️ **Net Score: {net_score:.1f}** (BEARISH)")
+            elif net_score <= -5:
+                momentum_section.append(f"  📉 **Net Score: {net_score:.1f}** (SLIGHT SELL)")
+            else:
+                momentum_section.append(f"  ➡️ **Net Score: {net_score:.1f}** (NEUTRAL)")
             
-            if buy_alerts and sell_alerts:
-                momentum_section.append(f"  ⚖️ {buy_alerts} buys, {sell_alerts} sells")
-            elif buy_alerts > sell_alerts:
-                momentum_section.append(f"  📈 {buy_alerts} buy signals")
-            elif sell_alerts > buy_alerts:
-                momentum_section.append(f"  📉 {sell_alerts} sell signals")
+            # Breakdown
+            if alert_count > 1:
+                momentum_section.append(f"  📊 {alert_count} alerts over 5 days")
+                if buy_momentum > 0:
+                    momentum_section.append(f"  💚 Buy Momentum: +{buy_momentum:.1f}")
+                if sell_momentum > 0:
+                    momentum_section.append(f"  💔 Sell Pressure: -{sell_momentum:.1f}")
             
+            # Activity indicators
+            velocity = momentum_data.get('momentum_velocity', 0)
+            if velocity > 0.5:
+                momentum_section.append(f"  ⚡ High Activity: {velocity:.0%} recent")
+            
+            # Special signals
             if momentum_data.get('whale_activity'):
                 momentum_section.append("  🐋 Whale activity detected")
             if momentum_data.get('pump_activity'):
@@ -574,61 +606,88 @@ class TelegramService:
             if momentum_data.get('smart_money_activity'):
                 momentum_section.append("  🧠 Smart money involved")
             
-            # Add momentum strength indicator
-            if momentum_score >= 80:
-                momentum_section.append("  🔥 **STRONG MOMENTUM**")
-            elif momentum_score >= 50:
-                momentum_section.append("  ⭐ **Building Momentum**")
+            # Trending direction
+            direction = momentum_data.get('trending_direction', 'SIDEWAYS')
+            if direction == 'UP':
+                momentum_section.append("  📈 **Trending: UPWARD**")
+            elif direction == 'DOWN':
+                momentum_section.append("  📉 **Trending: DOWNWARD**")
             
-            # Insert momentum section before the contract address
+            # Insert momentum section before contract address
             lines = message.split('\n')
             contract_index = next((i for i, line in enumerate(lines) if '**Contract Address:**' in line), len(lines))
-            
-            # Insert momentum section
             lines[contract_index:contract_index] = momentum_section
+            message = '\n'.join(lines)
+        else:
+            # If no momentum data, add first alert note
+            lines = message.split('\n')
+            contract_index = next((i for i, line in enumerate(lines) if '**Contract Address:**' in line), len(lines))
+            lines[contract_index:contract_index] = ["", "📊 **First Alert** - Building momentum data..."]
             message = '\n'.join(lines)
         
         return message
-    
+
     async def _send_trending_summary(self, network: str):
-        """Send a summary of trending tokens"""
+        """Send trending summary with enhanced error handling"""
         try:
             if not self.momentum_tracker:
+                logger.warning("No momentum tracker available for trending summary")
                 return
             
+            logger.info(f"Getting trending tokens for {network}")
             trending = await self.momentum_tracker.get_trending_tokens(
                 network=network, hours_back=24, limit=5
             )
             
-            if trending:
-                trending_lines = ["🔥 **24H TRENDING TOKENS**", ""]
+            if not trending:
+                logger.info("No trending tokens found")
+                return
+            
+            logger.info(f"Found {len(trending)} trending tokens")
+            
+            trending_lines = ["🔥 **24H MOMENTUM RANKING**", ""]
+            
+            for i, token_data in enumerate(trending[:3]):  # Top 3
+                net_score = token_data.get('net_momentum_score', 0)
+                momentum_indicator = token_data.get('momentum_indicator', 'NEUTRAL')
+                buy_momentum = token_data.get('buy_momentum', 0)
+                sell_momentum = token_data.get('sell_momentum', 0)
                 
-                for i, token_data in enumerate(trending[:3]):  # Top 3
-                    momentum_score = token_data['momentum_score']
-                    alert_count = token_data['alert_count']
-                    
-                    if momentum_score >= 80:
-                        strength = "🔥 STRONG"
-                    elif momentum_score >= 60:
-                        strength = "⭐ BUILDING" 
-                    else:
-                        strength = "📊 ACTIVE"
-                    
-                    trending_lines.append(
-                        f"{i+1}. **{token_data['token_symbol']}** - {strength} ({alert_count} alerts)"
-                    )
+                trending_lines.append(
+                    f"{i+1}. **{token_data['token_symbol']}** {momentum_indicator}"
+                )
+                trending_lines.append(
+                    f"   Net: {net_score:+.1f} (💚{buy_momentum:+.1f} 💔-{sell_momentum:.1f})"
+                )
                 
-                trending_lines.extend([
-                    "",
-                    f"Based on {trending[0]['hours_tracked']}h momentum analysis",
-                    f"⏰ {datetime.now().strftime('%H:%M:%S UTC')}"
-                ])
+                volume = token_data.get('total_volume', 0)
+                if volume > 1.0:
+                    trending_lines.append(f"   Volume: {volume:.2f} ETH")
                 
-                await self.send_message('\n'.join(trending_lines))
+                trending_lines.append("")  # Spacing
+            
+            trending_lines.extend([
+                "📈 **Legend:**",
+                "💚 = Buy momentum, 💔 = Sell pressure",
+                "Net = Combined score (Buys - Sells)",
+                "",
+                f"⏰ {datetime.now().strftime('%H:%M:%S UTC')}"
+            ])
+            
+            message = '\n'.join(trending_lines)
+            logger.info(f"Sending trending summary: {len(message)} characters")
+            
+            success = await self.send_message(message)
+            if success:
+                logger.info("Trending summary sent successfully")
+            else:
+                logger.error("Failed to send trending summary message")
                 
         except Exception as e:
-            logger.error(f"Failed to send trending summary: {e}")
-    
+            logger.error(f"Trending summary failed: {e}")
+            import traceback
+            logger.error(f"Trending summary traceback: {traceback.format_exc()}")
+           
     async def _send_analysis_summary(self, result, network: str, alerts_sent: int, min_alpha_score: float):
         """Send analysis summary"""
         network_info = get_network_info(network)

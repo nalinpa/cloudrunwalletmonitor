@@ -57,7 +57,6 @@ class AdvancedCryptoAI:
     async def complete_ai_analysis_with_web3(self, purchases: List, analysis_type: str) -> Dict:
         """
         ENHANCED: AI analysis with integrated batch Web3 intelligence processing
-        This is the main method that your data_processor will call
         """
         try:
             logger.info(f"🤖 AI Analysis with INTEGRATED Web3 intelligence: {len(purchases)} {analysis_type}")
@@ -69,14 +68,27 @@ class AdvancedCryptoAI:
             unique_tokens = self._extract_unique_tokens_info(purchases)
             logger.info(f"🔍 Found {len(unique_tokens)} unique tokens for batch Web3 analysis")
             
-            # Step 2: Batch process Web3 intelligence
-            web3_intelligence = await self._batch_process_web3_intelligence(unique_tokens)
+            # Step 2: Batch process Web3 intelligence with error handling
+            try:
+                web3_intelligence = await self._batch_process_web3_intelligence(unique_tokens)
+            except Exception as e:
+                logger.warning(f"Web3 intelligence processing failed: {e}, using defaults")
+                web3_intelligence = {token: self._default_web3_intelligence(token, 'ethereum') 
+                                for token in unique_tokens.keys()}
             
             # Step 3: Apply Web3 intelligence to all purchases
             self._apply_web3_intelligence_to_purchases(purchases, web3_intelligence)
             
             # Step 4: Run enhanced AI analysis with Web3 data
-            result = await self._run_enhanced_ai_analysis(purchases, analysis_type)
+            try:
+                result = await self._run_enhanced_ai_analysis(purchases, analysis_type)
+            except KeyError as e:
+                logger.error(f"KeyError in AI analysis: {e}")
+                logger.info("Falling back to basic analysis")
+                result = await self._run_basic_ai_analysis(purchases, analysis_type)
+            except Exception as e:
+                logger.error(f"AI analysis failed: {e}")
+                result = self._create_empty_result(analysis_type)
             
             # Step 5: Add Web3 statistics
             result['web3_enriched_count'] = len(web3_intelligence)
@@ -87,6 +99,9 @@ class AdvancedCryptoAI:
             
         except Exception as e:
             logger.error(f"❌ AI analysis with Web3 failed: {e}")
+            logger.error(f"Full error details: {str(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return self._create_empty_result(analysis_type)
     
     def _extract_unique_tokens_info(self, purchases: List) -> Dict:
@@ -410,7 +425,7 @@ class AdvancedCryptoAI:
             return self._create_empty_result(analysis_type)
     
     def _create_enhanced_dataframe_with_web3(self, purchases: List) -> pd.DataFrame:
-        """Create enhanced DataFrame with Web3 intelligence data"""
+        """Create enhanced DataFrame with Web3 intelligence data - FIXED KeyError issues"""
         data = []
         
         for purchase in purchases:
@@ -419,18 +434,24 @@ class AdvancedCryptoAI:
                 eth_value = getattr(purchase, 'eth_spent', getattr(purchase, 'amount_received', 0))
                 wallet_score = getattr(purchase, 'sophistication_score', 0) or 0
                 
-                # Extract Web3 intelligence
+                # Extract Web3 intelligence with safe defaults
                 web3_data = getattr(purchase, 'web3_analysis', {}) or {}
                 
-                # Web3 intelligence fields
+                # SAFE extraction of Web3 fields with defaults
                 is_verified = web3_data.get('is_verified', False)
                 has_liquidity = web3_data.get('has_liquidity', False)
                 liquidity_usd = web3_data.get('liquidity_usd', 0)
                 honeypot_risk = web3_data.get('honeypot_risk', 0.3)
-                token_age_hours = web3_data.get('token_age_hours')
+                
+                # FIXED: Safe token age extraction
+                token_age_hours = web3_data.get('token_age_hours', 999999)  # Default to old token
                 if token_age_hours is None:
-                    # Estimate based on other factors if available
-                    token_age_hours = 0  #assume brand new if no info
+                    token_age_hours = 999999
+                
+                # FIXED: Safe holder count extraction
+                holder_count = web3_data.get('holder_count', 0)
+                if holder_count is None:
+                    holder_count = 0
                 
                 # Core data with Web3 enhancements
                 row = {
@@ -445,17 +466,17 @@ class AdvancedCryptoAI:
                     'hour': timestamp.hour,
                     'unix_time': timestamp.timestamp(),
                     
-                    # Web3 intelligence
-                    'is_verified': is_verified,
-                    'has_liquidity': has_liquidity,
-                    'liquidity_usd': liquidity_usd,
-                    'honeypot_risk': honeypot_risk,
-                    'smart_money_buying': web3_data.get('smart_money_buying', False),
-                    'whale_accumulation': web3_data.get('whale_accumulation', False),
-                    'has_coingecko_listing': web3_data.get('has_coingecko_listing', False),
+                    # Web3 intelligence with SAFE defaults
+                    'is_verified': bool(is_verified),
+                    'has_liquidity': bool(has_liquidity),
+                    'liquidity_usd': float(liquidity_usd),
+                    'honeypot_risk': float(honeypot_risk),
+                    'smart_money_buying': bool(web3_data.get('smart_money_buying', False)),
+                    'whale_accumulation': bool(web3_data.get('whale_accumulation', False)),
+                    'has_coingecko_listing': bool(web3_data.get('has_coingecko_listing', False)),
                     'data_sources_count': len(web3_data.get('data_sources', [])),                    
                     'token_age_hours': float(token_age_hours),
-                    'holder_count': web3_data.get('holder_count', 0) or 0
+                    'holder_count': int(holder_count)
                 }
                 
                 data.append(row)
@@ -469,25 +490,88 @@ class AdvancedCryptoAI:
         
         df = pd.DataFrame(data)
         
-        # Add calculated features
+        # Add calculated features with SAFE operations
         df['log_eth'] = np.log1p(df['eth_value'])
         df['is_whale'] = df['eth_value'] > df['eth_value'].quantile(0.85)
-        df['is_smart_wallet'] = df['wallet_score'] > self.thresholds['smart_money_threshold']
+        df['is_smart_wallet'] = df['wallet_score'] > 200  # Fixed threshold
         df['has_api_data'] = df['data_sources_count'] > 0
         df['is_high_liquidity'] = df['liquidity_usd'] > 10000
+        
+        # FIXED: Safe new token detection
+        df['is_new_token'] = df['token_age_hours'] < 168  # Less than 1 week
         
         # Log Web3 intelligence statistics
         verified_count = df['is_verified'].sum()
         liquidity_count = df['has_liquidity'].sum()
         api_data_count = df['has_api_data'].sum()
+        new_token_count = df['is_new_token'].sum()
         
         logger.info(f"🤖 AI DataFrame with Web3: {len(df)} purchases")
         logger.info(f"✅ Verified: {verified_count}/{len(df)} ({verified_count/len(df)*100:.1f}%)")
         logger.info(f"💧 With liquidity: {liquidity_count}/{len(df)} ({liquidity_count/len(df)*100:.1f}%)")
         logger.info(f"🔍 API data: {api_data_count}/{len(df)} ({api_data_count/len(df)*100:.1f}%)")
+        logger.info(f"🆕 New tokens: {new_token_count}/{len(df)} ({new_token_count/len(df)*100:.1f}%)")
         
         return df
-    
+
+    def _create_enhanced_dataframe(self, purchases: List) -> pd.DataFrame:
+        """Create enhanced DataFrame - FIXED has_smart_money error"""
+        data = []
+        
+        for purchase in purchases:
+            try:
+                timestamp = getattr(purchase, 'timestamp', datetime.now())
+                eth_value = getattr(purchase, 'eth_spent', getattr(purchase, 'amount_received', 0))
+                wallet_score = getattr(purchase, 'sophistication_score', 0) or 0
+                
+                # Extract Web3 data efficiently with SAFE defaults
+                web3_data = getattr(purchase, 'web3_analysis', {}) or {}
+                
+                # Core data with Web3 enhancements
+                row = {
+                    # Basic data
+                    'token': purchase.token_bought,
+                    'eth_value': float(eth_value),
+                    'amount': float(purchase.amount_received),
+                    'wallet': purchase.wallet_address,
+                    'wallet_score': float(wallet_score),
+                    'timestamp': timestamp,
+                    'tx_hash': purchase.transaction_hash,
+                    'hour': timestamp.hour,
+                    'unix_time': timestamp.timestamp(),
+                    
+                    # Web3 data with SAFE defaults
+                    'token_age_hours': float(web3_data.get('token_age_hours', 999999)),
+                    'holder_count': int(web3_data.get('holder_count', 0)),
+                    'is_verified': bool(web3_data.get('is_verified', False)),
+                    'honeypot_risk': float(web3_data.get('honeypot_risk', 0.3)),
+                    'smart_money_buying': bool(web3_data.get('smart_money_buying', False)),
+                    'whale_accumulation': bool(web3_data.get('whale_accumulation', False)),
+                    'has_liquidity': bool(web3_data.get('has_liquidity', False))
+                }
+                
+                data.append(row)
+                
+            except Exception as e:
+                logger.debug(f"Error processing purchase: {e}")
+                continue
+        
+        if not data:
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(data)
+        
+        # Add calculated features efficiently with SAFE operations
+        df['log_eth'] = np.log1p(df['eth_value'])
+        df['is_whale'] = df['eth_value'] > df['eth_value'].quantile(0.85)
+        df['is_smart_wallet'] = df['wallet_score'] > 200
+        df['is_new_token'] = df['token_age_hours'] < 168
+        
+        df['has_smart_money'] = df['smart_money_buying'] | df['whale_accumulation']
+        
+        return df
+
+
     def _create_enhanced_scores_with_web3(self, analyses: Dict, df: pd.DataFrame) -> Dict:
         """Create enhanced scores with Web3 intelligence bonuses"""
         enhanced_scores = {}
@@ -772,7 +856,7 @@ class AdvancedCryptoAI:
         }
     
     def _detect_pump_signals(self, df: pd.DataFrame) -> Dict:
-        """Detect pump signals - streamlined approach"""
+        """Detect pump signals - FIXED to handle missing columns"""
         if df.empty or len(df) < 5:
             return {'detected': False, 'score': 0}
         
@@ -792,8 +876,11 @@ class AdvancedCryptoAI:
         # Smart money involvement
         smart_ratio = len(df[df['is_smart_wallet']]) / len(df)
         
-        # New token factor
-        new_token_ratio = len(df[df['is_new_token']]) / len(df)
+        if 'is_new_token' in df.columns:
+            new_token_ratio = len(df[df['is_new_token']]) / len(df)
+        else:
+            # Fallback: calculate based on token_age_hours
+            new_token_ratio = len(df[df['token_age_hours'] < 168]) / len(df) if 'token_age_hours' in df.columns else 0
         
         # Calculate pump score
         pump_score = (
@@ -804,7 +891,7 @@ class AdvancedCryptoAI:
             (0.15 if df['has_smart_money'].any() else 0)
         )
         
-        detected = pump_score >= self.thresholds['pump_threshold']
+        detected = pump_score >= 0.65  # threshold
         
         return {
             'detected': detected,
@@ -814,7 +901,7 @@ class AdvancedCryptoAI:
             'phase': self._get_pump_phase(pump_score),
             'confidence': min(pump_score * 1.2, 1.0)
         }
-    
+        
     def _analyze_smart_money_flow(self, df: pd.DataFrame) -> Dict:
         """Analyze smart money flow - efficient approach"""
         if df.empty:

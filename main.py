@@ -191,7 +191,12 @@ def main(request: Request):
     try:
         # Handle GET request (health check + status)
         if request.method == 'GET':
-            return asyncio.run(handle_health_check(headers))
+            path = request.path or request.url.path
+        
+            if path == '/debug-etherscan':  # ADD THIS
+                return asyncio.run(handle_etherscan_debug(headers))
+            else:       
+                return asyncio.run(handle_health_check(headers))
         
         # Handle POST request (analysis) with duplicate prevention
         if request.method == 'POST':
@@ -213,6 +218,150 @@ def main(request: Request):
             "success": False,
             "timestamp": datetime.utcnow().isoformat(),
             "traceback": traceback.format_exc()
+        }
+        return (json_dumps(error_response), 500, headers)
+
+async def handle_etherscan_debug(headers):
+    """Debug Etherscan API calls step by step"""
+    try:
+        from utils.config import Config
+        import aiohttp
+        
+        config = Config()
+        
+        debug_results = {
+            "config_check": {
+                "api_key_exists": bool(config.etherscan_api_key),
+                "api_key_length": len(config.etherscan_api_key) if config.etherscan_api_key else 0,
+                "api_key_preview": config.etherscan_api_key[:10] + "..." if config.etherscan_api_key else "None",
+                "endpoint": config.etherscan_endpoint,
+                "rate_limit": config.etherscan_api_rate_limit
+            },
+            "api_tests": {}
+        }
+        
+        if not config.etherscan_api_key:
+            debug_results["error"] = "No API key configured"
+            return (json_dumps(debug_results), 500, headers)
+        
+        # Test known verified contracts
+        test_contracts = {
+            "ethereum_usdc": {
+                "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+                "network": "ethereum",
+                "expected": "USDC - should be verified"
+            },
+            "base_usdc": {
+                "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+                "network": "base", 
+                "expected": "USDC on Base - should be verified"
+            }
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            for test_name, test_data in test_contracts.items():
+                address = test_data["address"]
+                network = test_data["network"]
+
+                chain_id = 1
+
+                if network == 'ethereum':
+                    chain_id = 1
+                elif network == 'base':
+                    chain_id = 8453
+                
+                # Get endpoint
+                endpoint = config.etherscan_endpoint
+                if not endpoint:
+                    debug_results["api_tests"][test_name] = {
+                        "error": f"No endpoint configured for {network}"
+                    }
+                    continue
+                
+                # Build URL
+                url = f"{endpoint}?chainid={chain_id}&module=contract&action=getsourcecode&address={address}&apikey={config.etherscan_api_key}"
+
+                debug_results["api_tests"][test_name] = {
+                    "network": network,
+                    "address": address,
+                    "endpoint": endpoint,
+                    "expected": test_data["expected"]
+                }
+                
+                try:
+                    # Make API call
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                        debug_results["api_tests"][test_name]["http_status"] = response.status
+                        
+                        if response.status == 200:
+                            data = await response.json()
+                            debug_results["api_tests"][test_name]["api_response"] = {
+                                "status": data.get("status"),
+                                "message": data.get("message", ""),
+                                "result_exists": bool(data.get("result"))
+                            }
+                            
+                            if data.get("status") == "1" and data.get("result"):
+                                result = data["result"][0] if isinstance(data["result"], list) else data["result"]
+                                
+                                source_code = result.get("SourceCode", "")
+                                contract_name = result.get("ContractName", "")
+                                
+                                debug_results["api_tests"][test_name]["contract_details"] = {
+                                    "contract_name": contract_name,
+                                    "has_source_code": bool(source_code and source_code.strip()),
+                                    "source_code_length": len(source_code) if source_code else 0,
+                                    "compiler_version": result.get("CompilerVersion", ""),
+                                    "abi_available": bool(result.get("ABI", "").strip())
+                                }
+                                
+                                # Determine if verified
+                                is_verified = bool(source_code and source_code.strip() and source_code != "{{}}")
+                                debug_results["api_tests"][test_name]["is_verified"] = is_verified
+                                debug_results["api_tests"][test_name]["verification_status"] = "✅ VERIFIED" if is_verified else "❌ NOT VERIFIED"
+                                
+                            elif data.get("status") == "0":
+                                error_msg = data.get("message", "Unknown error")
+                                debug_results["api_tests"][test_name]["api_error"] = error_msg
+                                
+                                if "rate limit" in error_msg.lower():
+                                    debug_results["api_tests"][test_name]["issue"] = "RATE LIMITED"
+                                elif "invalid" in error_msg.lower():
+                                    debug_results["api_tests"][test_name]["issue"] = "INVALID API KEY"
+                                else:
+                                    debug_results["api_tests"][test_name]["issue"] = "API ERROR"
+                        
+                        elif response.status == 403:
+                            debug_results["api_tests"][test_name]["issue"] = "FORBIDDEN - Check API key permissions"
+                        elif response.status == 429:
+                            debug_results["api_tests"][test_name]["issue"] = "RATE LIMITED"
+                        else:
+                            debug_results["api_tests"][test_name]["issue"] = f"HTTP {response.status}"
+                
+                except Exception as e:
+                    debug_results["api_tests"][test_name]["exception"] = str(e)
+                
+                # Add delay between tests
+                await asyncio.sleep(0.5)
+        
+        # Summary
+        successful_tests = sum(1 for test in debug_results["api_tests"].values() 
+                             if test.get("is_verified") is True)
+        total_tests = len(debug_results["api_tests"])
+        
+        debug_results["summary"] = {
+            "successful_verifications": f"{successful_tests}/{total_tests}",
+            "api_working": successful_tests > 0,
+            "all_tests_passed": successful_tests == total_tests
+        }
+        
+        status_code = 200 if successful_tests > 0 else 500
+        return (json_dumps(debug_results), status_code, headers)
+        
+    except Exception as e:
+        error_response = {
+            "error": f"Debug test failed: {str(e)}",
+            "timestamp": datetime.utcnow().isoformat()
         }
         return (json_dumps(error_response), 500, headers)
 

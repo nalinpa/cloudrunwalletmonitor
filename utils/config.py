@@ -28,6 +28,16 @@ class Config:
         
         # API configuration
         self.alchemy_api_key = os.getenv('ALCHEMY_API_KEY')
+        self.etherscan_api_key = os.getenv('ETHERSCAN_API_KEY')
+        self.etherscan_endpoint = "https://api.etherscan.io/v2/api"
+        
+        # Chain ID mapping for Etherscan V2
+        self.chain_ids = {
+            'ethereum': 1,
+            'base': 8453
+        }
+        
+        self.etherscan_api_rate_limit = 0.2
         
         # General settings
         self.environment = os.getenv('ENVIRONMENT', 'production')
@@ -67,7 +77,10 @@ class Config:
         # Alchemy API validation
         if not self.alchemy_api_key:
             errors.append("ALCHEMY_API_KEY not configured")
-        
+            
+        if not self.etherscan_api_key:
+            errors.append("ETHERSCAN_API_KEY not configured (will use heuristics only)")
+            
         # BigQuery validation
         if not self.bigquery_project_id:
             errors.append("BIGQUERY_PROJECT_ID not configured")

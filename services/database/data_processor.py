@@ -7,6 +7,7 @@ import asyncio
 import aiohttp
 
 from api.models.data_models import WalletInfo, Purchase, Transfer, TransferType
+from utils.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ class UnifiedDataProcessor:
     
     def __init__(self):
         # Token exclusion lists
+        self.config = Config()
         self.excluded_assets = frozenset({
             'ETH', 'WETH', 'USDC', 'USDT', 'DAI', 'BUSD', 'FRAX', 'LUSD', 'USDC.E'
         })
@@ -567,58 +569,144 @@ class UnifiedDataProcessor:
         return self._session
     
     async def _check_contract_verification(self, session, contract_address: str, network: str) -> Dict:
-        """Check contract verification"""
+        """Simple contract verification using only Etherscan V2 API"""
         try:
-            if network.lower() == 'ethereum':
-                url = f"https://api.etherscan.io/api?module=contract&action=getsourcecode&address={contract_address}&apikey=YourApiKeyToken"
-            elif network.lower() == 'base':
-                url = f"https://api.basescan.org/api?module=contract&action=getsourcecode&address={contract_address}"
-            else:
-                return {}
+            if not self.config.etherscan_api_key:
+                logger.debug("No Etherscan API key - returning unverified")
+                return {'is_verified': False, 'source': 'no_api_key'}
             
-            async with session.get(url) as response:
+            # Get chain ID for network
+            chain_id = self.config.chain_ids.get(network.lower())
+            if not chain_id:
+                logger.debug(f"No chain ID configured for {network} - returning unverified")
+                return {'is_verified': False, 'source': 'unsupported_network'}
+            
+            # Build V2 API URL
+            url = f"{self.config.etherscan_endpoint}?chainid={chain_id}&module=contract&action=getsourcecode&address={contract_address}&apikey={self.config.etherscan_api_key}"
+            
+            # Apply rate limiting
+            await asyncio.sleep(self.config.etherscan_api_rate_limit)
+            
+            logger.debug(f"🔍 V2 API check: {contract_address[:10]}... on {network} (chain {chain_id})")
+            
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=12)) as response:
                 if response.status == 200:
                     data = await response.json()
+                    
+                    # Handle API errors
+                    if data.get('status') == '0':
+                        error_msg = data.get('message', 'Unknown error')
+                        logger.debug(f"V2 API error for {network}: {error_msg}")
+                        return {'is_verified': False, 'source': 'api_error', 'error': error_msg}
+                    
+                    # Parse successful response
                     if data.get('status') == '1' and data.get('result'):
                         result = data['result'][0] if isinstance(data['result'], list) else data['result']
+                        
                         source_code = result.get('SourceCode', '')
-                        is_verified = bool(source_code and source_code.strip())
+                        contract_name = result.get('ContractName', '')
+                        
+                        # Simple verification check
+                        has_source = bool(source_code and source_code.strip() and 
+                                        source_code not in ['', '{{}}', 'Contract source code not verified'])
+                        
+                        is_verified = has_source
+                        
+                        if is_verified:
+                            logger.info(f"✅ V2 {network.upper()} verified: {contract_name} ({contract_address[:10]}...)")
+                        else:
+                            logger.info(f"❌ V2 {network.upper()} unverified: ({contract_address[:10]}...)")
                         
                         return {
                             'is_verified': is_verified,
-                            'contract_name': result.get('ContractName', ''),
-                            'source': f'{network}_explorer'
+                            'contract_name': contract_name or 'Unknown',
+                            'compiler_version': result.get('CompilerVersion', ''),
+                            'optimization_used': result.get('OptimizationUsed') == '1',
+                            'has_source_code': has_source,
+                            'chain_id': chain_id,
+                            'source': 'etherscan_v2'
                         }
+                    else:
+                        logger.debug(f"V2 API no result for {contract_address}")
+                        return {'is_verified': False, 'source': 'no_result'}
+                
+                else:
+                    logger.debug(f"V2 API HTTP {response.status} for {network}")
+                    return {'is_verified': False, 'source': f'http_{response.status}'}
         
         except Exception as e:
-            logger.debug(f"Verification check failed: {e}")
-        
-        return {}
+            logger.debug(f"V2 API exception: {e}")
+            return {'is_verified': False, 'source': 'exception', 'error': str(e)}
     
     async def _check_dexscreener_liquidity(self, session, contract_address: str) -> Dict:
-        """Check DexScreener liquidity"""
+        """Enhanced DexScreener liquidity check with better error handling"""
         try:
             url = f"https://api.dexscreener.com/latest/dex/tokens/{contract_address}"
             
-            async with session.get(url) as response:
+            # Add small delay to avoid overwhelming DexScreener
+            await asyncio.sleep(0.1)
+            
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as response:
                 if response.status == 200:
                     data = await response.json()
                     pairs = data.get('pairs', [])
                     
                     if pairs:
-                        valid_pairs = [p for p in pairs if p.get('liquidity', {}).get('usd', 0) > 100]
+                        # Filter out pairs with very low liquidity
+                        valid_pairs = [p for p in pairs if p.get('liquidity', {}).get('usd', 0) > 500]
                         
                         if valid_pairs:
+                            # Get the pair with highest liquidity
                             best_pair = max(valid_pairs, key=lambda x: float(x.get('liquidity', {}).get('usd', 0)))
                             liquidity_usd = float(best_pair.get('liquidity', {}).get('usd', 0))
                             
+                            # Enhanced liquidity analysis
+                            volume_24h = float(best_pair.get('volume', {}).get('h24', 0))
+                            price_usd = best_pair.get('priceUsd')
+                            dex_name = best_pair.get('dexId', 'Unknown')
+                            
+                            logger.debug(f"💧 {contract_address[:10]}... liquidity: ${liquidity_usd:,.0f} on {dex_name}")
+                            
                             return {
-                                'has_liquidity': liquidity_usd > 1000,
+                                'has_liquidity': liquidity_usd > 1000,  # At least $1k liquidity
                                 'liquidity_usd': liquidity_usd,
-                                'price_usd': best_pair.get('priceUsd'),
+                                'volume_24h_usd': volume_24h,
+                                'price_usd': float(price_usd) if price_usd else 0,
+                                'dex_name': dex_name,
+                                'pair_address': best_pair.get('pairAddress', ''),
+                                'liquidity_pools': [dex_name],  # For backwards compatibility
                                 'source': 'dexscreener'
                             }
+                        else:
+                            # Pairs exist but liquidity too low
+                            logger.debug(f"💧 {contract_address[:10]}... has pairs but low liquidity")
+                            return {
+                                'has_liquidity': False,
+                                'liquidity_usd': 0,
+                                'reason': 'liquidity_too_low',
+                                'source': 'dexscreener'
+                            }
+                    else:
+                        # No pairs found
+                        logger.debug(f"💧 {contract_address[:10]}... no trading pairs found")
+                        return {
+                            'has_liquidity': False,
+                            'liquidity_usd': 0,
+                            'reason': 'no_pairs_found',
+                            'source': 'dexscreener'
+                        }
+                
+                elif response.status == 429:
+                    logger.warning("⚠️ DexScreener rate limit")
+                    return {'rate_limited': True, 'source': 'dexscreener'}
+                
+                else:
+                    logger.debug(f"DexScreener API failed: HTTP {response.status}")
+                    return {}
         
+        except asyncio.TimeoutError:
+            logger.debug(f"DexScreener timeout for {contract_address}")
+            return {}
         except Exception as e:
             logger.debug(f"DexScreener check failed: {e}")
         

@@ -427,6 +427,10 @@ class AdvancedCryptoAI:
                 has_liquidity = web3_data.get('has_liquidity', False)
                 liquidity_usd = web3_data.get('liquidity_usd', 0)
                 honeypot_risk = web3_data.get('honeypot_risk', 0.3)
+                token_age_hours = web3_data.get('token_age_hours')
+                if token_age_hours is None:
+                    # Estimate based on other factors if available
+                    token_age_hours = 0  #assume brand new if no info
                 
                 # Core data with Web3 enhancements
                 row = {
@@ -449,7 +453,9 @@ class AdvancedCryptoAI:
                     'smart_money_buying': web3_data.get('smart_money_buying', False),
                     'whale_accumulation': web3_data.get('whale_accumulation', False),
                     'has_coingecko_listing': web3_data.get('has_coingecko_listing', False),
-                    'data_sources_count': len(web3_data.get('data_sources', []))
+                    'data_sources_count': len(web3_data.get('data_sources', [])),                    
+                    'token_age_hours': float(token_age_hours),
+                    'holder_count': web3_data.get('holder_count', 0) or 0
                 }
                 
                 data.append(row)

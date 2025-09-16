@@ -73,6 +73,272 @@ class TelegramClient:
             logger.error(f"Telegram send failed: {e}")
             return False
 
+class DailyPrimeTimeSystem:
+    """Single daily prime time window for buy and sell analysis"""
+    
+    def __init__(self):
+        # Single daily prime time windows (NZDT timezone)
+        self.daily_prime_times = {
+            'buy': {
+                'prime_hour': 9,        # 9:00 AM NZDT - Absolute lowest prices (Asian morning lull)
+                'prime_minute': 0,      # Exact time: 9:00 AM
+                'window_minutes': 45,   # ±45 minutes around prime time (8:15 AM - 9:45 AM)
+                'description': 'DAILY PEAK BUY WINDOW - Lowest global prices'
+            },
+            'sell': {
+                'prime_hour': 18,       # 6:00 PM NZDT - Peak liquidity (Asia close + Europe active)
+                'prime_minute': 0,      # Exact time: 6:00 PM  
+                'window_minutes': 45,   # ±45 minutes around prime time (5:15 PM - 6:45 PM)
+                'description': 'DAILY PEAK SELL WINDOW - Highest global liquidity'
+            }
+        }
+    
+    def is_daily_prime_time(self, analysis_type: str, current_time: datetime = None) -> Dict[str, Any]:
+        """Check if current time is within the daily prime trading window"""
+        
+        if current_time is None:
+            current_time = datetime.now()
+        
+        prime_config = self.daily_prime_times.get(analysis_type, {})
+        prime_hour = prime_config.get('prime_hour')
+        prime_minute = prime_config.get('prime_minute', 0)
+        window_minutes = prime_config.get('window_minutes', 45)
+        description = prime_config.get('description', 'Prime time')
+        
+        if not prime_hour:
+            return {'is_prime_time': False, 'priority_level': 'MEDIUM'}
+        
+        # Calculate current time in minutes since midnight
+        current_total_minutes = current_time.hour * 60 + current_time.minute
+        prime_total_minutes = prime_hour * 60 + prime_minute
+        
+        # Calculate difference in minutes
+        minutes_diff = current_total_minutes - prime_total_minutes
+        
+        # Check if within prime window
+        if abs(minutes_diff) <= window_minutes:
+            # Determine priority level based on proximity to exact prime time
+            if abs(minutes_diff) <= 15:  # Within 15 minutes of exact prime time
+                priority_level = 'CRITICAL'
+                window_type = 'PEAK'
+            elif abs(minutes_diff) <= 30:  # Within 30 minutes
+                priority_level = 'HIGH'
+                window_type = 'PRIME'
+            else:  # Within 45 minutes
+                priority_level = 'HIGH'
+                window_type = 'EXTENDED'
+            
+            return {
+                'is_prime_time': True,
+                'priority_level': priority_level,
+                'window_type': window_type,
+                'minutes_from_peak': minutes_diff,
+                'prime_hour': prime_hour,
+                'prime_minute': prime_minute,
+                'window_minutes': window_minutes,
+                'description': description,
+                'prime_reason': f"DAILY {window_type} {analysis_type.upper()} WINDOW",
+                'exact_prime_time': f"{prime_hour:02d}:{prime_minute:02d}",
+                'window_start': self._format_time(prime_hour, prime_minute - window_minutes),
+                'window_end': self._format_time(prime_hour, prime_minute + window_minutes)
+            }
+        
+        else:
+            # Not in prime time - calculate next occurrence
+            if minutes_diff < -window_minutes:
+                # Prime time is later today
+                minutes_until = -minutes_diff - window_minutes
+                next_occurrence = "today"
+            else:
+                # Prime time is tomorrow
+                minutes_until = (24 * 60) - minutes_diff + window_minutes
+                next_occurrence = "tomorrow"
+            
+            return {
+                'is_prime_time': False,
+                'priority_level': 'MEDIUM',
+                'minutes_until_prime': minutes_until,
+                'next_prime_time': f"{prime_hour:02d}:{prime_minute:02d}",
+                'next_occurrence': next_occurrence,
+                'description': description,
+                'prime_reason': 'NON-PRIME WINDOW'
+            }
+    
+    def _format_time(self, hour: int, minute: int) -> str:
+        """Format time handling overflow/underflow"""
+        # Handle minute overflow/underflow
+        while minute >= 60:
+            minute -= 60
+            hour += 1
+        while minute < 0:
+            minute += 60
+            hour -= 1
+        
+        # Handle hour overflow/underflow
+        hour = hour % 24
+        
+        return f"{hour:02d}:{minute:02d}"
+    
+    def enhance_alerts_for_daily_prime_time(self, alerts: list, analysis_type: str) -> list:
+        """Enhance alerts with daily prime time priority"""
+        
+        prime_time_info = self.is_daily_prime_time(analysis_type)
+        
+        if prime_time_info['is_prime_time']:
+            logger.info(f"🕐 DAILY PRIME TIME ACTIVE: {prime_time_info['prime_reason']}")
+            logger.info(f"🎯 Window: {prime_time_info['window_start']} - {prime_time_info['window_end']}")
+            logger.info(f"⏰ Peak time: {prime_time_info['exact_prime_time']} (offset: {prime_time_info['minutes_from_peak']:+d} min)")
+        
+        enhanced_alerts = []
+        for alert in alerts:
+            # Copy alert and add prime time information
+            enhanced_alert = alert.copy()
+            enhanced_alert['prime_time_info'] = prime_time_info
+            
+            if prime_time_info['is_prime_time']:
+                # PRIME TIME ENHANCEMENTS - NO SCORE BONUS
+                enhanced_alert['priority_level'] = prime_time_info['priority_level']
+                enhanced_alert['is_daily_prime_time'] = True
+                enhanced_alert['window_type'] = prime_time_info['window_type']
+                
+                # Keep original score unchanged
+                enhanced_alert['final_score'] = enhanced_alert.get('enhanced_score', enhanced_alert.get('score', 0))
+                
+                logger.info(f"🚨 DAILY PRIME ALERT: {alert['token']} - {prime_time_info['window_type']} WINDOW")
+                
+            else:
+                # NON-PRIME TIME
+                enhanced_alert['priority_level'] = 'MEDIUM'
+                enhanced_alert['is_daily_prime_time'] = False
+                enhanced_alert['final_score'] = enhanced_alert.get('enhanced_score', enhanced_alert.get('score', 0))
+                
+                # Log next prime time
+                logger.info(f"📊 Non-prime alert: {alert['token']} (next prime: {prime_time_info.get('next_prime_time', 'N/A')} {prime_time_info.get('next_occurrence', '')})")
+            
+            enhanced_alerts.append(enhanced_alert)
+        
+        return enhanced_alerts
+
+    def format_daily_prime_time_message(self, alert: Dict) -> str:
+        """Format alert message with daily prime time enhancements"""
+        
+        prime_info = alert.get('prime_time_info', {})
+        
+        if not prime_info.get('is_prime_time'):
+            # Regular formatting for non-prime time
+            return self._format_regular_alert(alert)
+        
+        # PRIME TIME FORMATTING
+        data = alert.get('data', {})
+        token = alert.get('token', 'UNKNOWN')
+        network = alert.get('network', 'ethereum')
+        analysis_type = alert.get('alert_type', 'unknown')
+        window_type = alert.get('window_type', 'PRIME')
+        
+        # Priority-specific headers
+        if prime_info['priority_level'] == 'CRITICAL':
+            header = "🚨🕐🚨 **DAILY PEAK TIME ALERT** 🚨🕐🚨"
+            intensity = "PEAK"
+        elif window_type == 'PRIME':
+            header = "🔥🕐 **DAILY PRIME TIME ALERT** 🕐🔥"
+            intensity = "PRIME"
+        else:
+            header = "⭐🕐 **DAILY PRIME WINDOW** 🕐⭐"
+            intensity = "EXTENDED"
+        
+        # Analysis-specific descriptions
+        if analysis_type == 'buy':
+            strategy_desc = "🎯 **OPTIMAL ACCUMULATION WINDOW**"
+            timing_desc = "💰 Lowest global prices - Peak buying opportunity"
+        else:
+            strategy_desc = "🎯 **OPTIMAL DISTRIBUTION WINDOW**"  
+            timing_desc = "💎 Highest global liquidity - Peak selling opportunity"
+        
+        # Core metrics
+        final_score = alert.get('final_score', 0)
+        eth_value = data.get('total_eth_spent', data.get('total_eth_received', 0))
+        wallet_count = data.get('wallet_count', 0)
+        
+        # Time information
+        exact_prime = prime_info.get('exact_prime_time', 'N/A')
+        minutes_offset = prime_info.get('minutes_from_peak', 0)
+        window_start = prime_info.get('window_start', 'N/A')
+        window_end = prime_info.get('window_end', 'N/A')
+        
+        message = f"""{header}
+
+{strategy_desc}
+{timing_desc}
+
+🪙 **Token:** `{token}`
+🌐 **Network:** {self._get_network_display(network)}
+⚡ **SCORE:** {final_score:.1f}
+💰 **ETH Volume:** {eth_value:.4f}
+👥 **Wallets:** {wallet_count}
+
+🕐 **DAILY PRIME TIME INFO:**
+  🎯 **Peak Time:** {exact_prime} NZDT
+  📊 **Current Offset:** {minutes_offset:+d} minutes from peak
+  ⏰ **Prime Window:** {window_start} - {window_end}
+  🔥 **Intensity:** {intensity} WINDOW
+
+💡 **Why This Matters:**
+{prime_info.get('description', 'Optimal trading window')}"""
+
+        # Add contract address and priority actions
+        contract_address = data.get('contract_address', data.get('ca', ''))
+        if contract_address:
+            message += f"""
+
+📋 **Contract Address:**
+`{contract_address}`
+
+🚨 **PRIORITY ACTIONS:**
+{self._get_priority_action_links(token, contract_address, network, analysis_type)}"""
+        
+        message += f"""
+
+🚨🚨🚨 **DAILY PRIME TIME - ACT NOW** 🚨🚨🚨
+⏰ {datetime.now().strftime('%H:%M:%S UTC')}"""
+        
+        return message
+    
+    def _format_regular_alert(self, alert: Dict) -> str:
+        """Standard formatting for non-prime time alerts"""
+        # Your existing alert formatting
+        data = alert.get('data', {})
+        token = alert.get('token', 'UNKNOWN')
+        
+        return f"""📊 **Standard Alert**
+
+🪙 **Token:** `{token}`
+📊 **Score:** {alert.get('final_score', 0):.1f}
+💰 **ETH:** {data.get('total_eth_spent', data.get('total_eth_received', 0)):.4f}
+
+⏰ {datetime.now().strftime('%H:%M:%S UTC')}"""
+    
+    def _get_network_display(self, network: str) -> str:
+        """Enhanced network display for prime time"""
+        displays = {
+            'ethereum': '🔷 Ethereum (ETH)',
+            'base': '🔵 Base (ETH)', 
+            'arbitrum': '🔺 Arbitrum (ETH)'
+        }
+        return displays.get(network.lower(), f"🌐 {network.upper()}")
+    
+    def _get_priority_action_links(self, token: str, contract_address: str, network: str, analysis_type: str) -> str:
+        """Priority action links for prime time"""
+        from .notifications import generate_action_links
+        
+        base_links = generate_action_links(token, contract_address, network)
+        
+        if analysis_type == 'buy':
+            priority_note = "🚨 **BUY NOW** - Optimal entry prices"
+        else:
+            priority_note = "🚨 **SELL NOW** - Peak liquidity window"
+        
+        return f"{base_links}\n\n{priority_note}"
+    
 # Global telegram client instance
 telegram_client = TelegramClient()
 
@@ -472,13 +738,21 @@ class TelegramService:
             }
     
     async def send_analysis_notifications(self, result, network: str, max_tokens: int = 7, min_alpha_score: float = 50.0):
-        """Send notifications with fixed trending summary"""
+        """Send notifications with momentum and daily prime time enhancement"""
         try:
+            # Initialize daily prime time system
+            daily_prime_system = DailyPrimeTimeSystem()
+            
             if not result.ranked_tokens:
-                await self.send_message(f"📊 **Analysis Complete** - No tokens found for {network.upper()}")
+                # Check if this would be prime time for context
+                prime_info = daily_prime_system.is_daily_prime_time(result.analysis_type)
+                message = f"📊 **{result.analysis_type.upper()} Analysis Complete** - No tokens found for {network.upper()}"
+                if prime_info['is_prime_time']:
+                    message = f"🕐 **DAILY PRIME TIME** {message}"
+                await self.send_message(message)
                 return
             
-            # Filter tokens by score
+            # Filter tokens by score and convert to alerts
             qualifying_tokens = []
             for token_data in result.ranked_tokens:
                 if len(token_data) >= 4:
@@ -490,55 +764,74 @@ class TelegramService:
                             'alert_type': result.analysis_type,
                             'network': network,
                             'confidence': ai_data.get('confidence', 'Unknown'),
-                            'ai_data': ai_data
+                            'ai_data': ai_data,
+                            'score': score,
+                            'enhanced_score': score  # Keep original scoring
                         }
                         qualifying_tokens.append(alert)
             
-            limited_tokens = qualifying_tokens[:max_tokens]
+            if not qualifying_tokens:
+                await self._send_no_alerts_message(result, network, min_alpha_score)
+                return
             
-            if limited_tokens:
-                # Send individual notifications with momentum context
-                for alert in limited_tokens:
+            # Add momentum data for each alert (existing logic)
+            for alert in qualifying_tokens:
+                try:
+                    # Get momentum data
+                    momentum_data = {}
+                    if self.momentum_tracker:
+                        momentum_data = await self.momentum_tracker.get_token_momentum(
+                            alert['token'], alert['network'], days_back=5
+                        )
+                    alert['momentum_data'] = momentum_data
+                    
+                    # Store alert for future momentum tracking
+                    if self.momentum_tracker:
+                        success = await self.momentum_tracker.store_alert(alert)
+                        if not success:
+                            logger.warning(f"Failed to store momentum alert for {alert['token']}")
+                            
+                except Exception as e:
+                    logger.error(f"Error processing momentum for {alert['token']}: {e}")
+                    alert['momentum_data'] = {}
+            
+            # ENHANCE WITH DAILY PRIME TIME (without changing function names)
+            enhanced_alerts = daily_prime_system.enhance_alerts_for_daily_prime_time(qualifying_tokens, result.analysis_type)
+            
+            # Sort by momentum direction (existing logic)
+            enhanced_alerts = self._sort_alerts_by_momentum_direction(enhanced_alerts, result.analysis_type)
+            
+            # Limit to max tokens
+            limited_alerts = enhanced_alerts[:max_tokens]
+            
+            if limited_alerts:
+                # Send individual notifications with prime time formatting
+                for alert in limited_alerts:
                     try:
-                        # Get momentum data
-                        momentum_data = {}
-                        if self.momentum_tracker:
-                            momentum_data = await self.momentum_tracker.get_token_momentum(
-                                alert['token'], alert['network'], days_back=5
-                            )
+                        # Use prime time formatting if it's prime time, otherwise use existing formatting
+                        if alert.get('is_daily_prime_time', False):
+                            message = daily_prime_system.format_daily_prime_time_message(alert)
+                        else:
+                            message = self._format_alert_with_momentum(alert)
                         
-                        alert['momentum_data'] = momentum_data
-                        
-                        # Send message with momentum
-                        message = self._format_alert_with_momentum(alert)
                         await self.send_message(message)
-                        
-                        # Store alert for future momentum tracking
-                        if self.momentum_tracker:
-                            success = await self.momentum_tracker.store_alert(alert)
-                            if not success:
-                                logger.warning(f"Failed to store momentum alert for {alert['token']}")
-                        
                         await asyncio.sleep(2)  # Rate limiting
                         
                     except Exception as e:
                         logger.error(f"Failed to send alert: {e}")
                 
-                # FIXED: Send trending summary with error handling
+                # Send trending summary (existing logic)
                 if self.momentum_tracker:
                     try:
-                        await self._send_trending_summary(network)
+                        await self._send_trending_summary(network, result.analysis_type)
                         logger.info("Trending summary sent successfully")
                     except Exception as e:
                         logger.error(f"Failed to send trending summary: {e}")
-                        logger.error(f"Trending summary error traceback: {traceback.format_exc()}")
-                else:
-                    logger.warning("No momentum tracker available for trending summary")
                 
-                # Send regular summary
-                await self._send_analysis_summary(result, network, len(limited_tokens), min_alpha_score)
-                
-                logger.info(f"Sent {len(limited_tokens)} notifications for {network}")
+                # Send analysis summary with prime time context
+                await self._send_analysis_summary(result, network, len(limited_alerts), min_alpha_score, daily_prime_system)
+
+                logger.info(f"Sent {len(limited_alerts)} notifications for {network}")
                 
             else:
                 await self._send_no_alerts_message(result, network, min_alpha_score)
@@ -549,6 +842,53 @@ class TelegramService:
             logger.error(f"Notification error traceback: {traceback.format_exc()}")
             await self.send_message(f"❌ **Notification Error** - Analysis completed but failed to send alerts: {str(e)}")
 
+    def _sort_alerts_by_momentum_direction(self, alerts: List[Dict], analysis_type: str) -> List[Dict]:
+        """Sort alerts by momentum score based on analysis type"""
+        
+        if not alerts:
+            return alerts
+        
+        # Extract momentum scores and sort appropriately
+        alerts_with_momentum = []
+        
+        for alert in alerts:
+            # Get momentum score from momentum_data if available
+            momentum_data = alert.get('momentum_data', {})
+            momentum_score = momentum_data.get('net_momentum_score', 0)
+            
+            # If no momentum data, use a neutral score
+            if momentum_score == 0:
+                momentum_score = 0
+            
+            alert['momentum_score'] = momentum_score
+            alerts_with_momentum.append(alert)
+        
+        # Sort based on analysis type
+        if analysis_type == 'buy':
+            # BUY: Sort by HIGHEST positive momentum first (descending order)
+            sorted_alerts = sorted(alerts_with_momentum, 
+                                key=lambda x: x['momentum_score'], 
+                                reverse=True)  # Highest first
+            logger.info(f"📈 BUY alerts sorted by highest positive momentum")
+            
+        elif analysis_type == 'sell':
+            # SELL: Sort by LOWEST negative momentum first (ascending order) 
+            sorted_alerts = sorted(alerts_with_momentum, 
+                                key=lambda x: x['momentum_score'], 
+                                reverse=False)  # Lowest first (most negative)
+            logger.info(f"📉 SELL alerts sorted by lowest negative momentum")
+            
+        else:
+            # Default: no special sorting
+            sorted_alerts = alerts_with_momentum
+        
+        # Log the momentum scores for debugging
+        for i, alert in enumerate(sorted_alerts[:3]):  # Show top 3
+            score = alert['momentum_score']
+            token = alert.get('token', 'Unknown')
+            logger.info(f"  {i+1}. {token}: momentum {score:+.1f}")
+        
+        return sorted_alerts
 
     def _format_alert_with_momentum(self, alert: dict) -> str:
         """Format alert with momentum context showing net scores"""
@@ -627,16 +967,16 @@ class TelegramService:
         
         return message
 
-    async def _send_trending_summary(self, network: str):
-        """Send trending summary with enhanced error handling"""
+    async def _send_trending_summary(self, network: str, analysis_type: str = None):
+        """Send trending summary with momentum sorting based on analysis type"""
         try:
             if not self.momentum_tracker:
                 logger.warning("No momentum tracker available for trending summary")
                 return
             
-            logger.info(f"Getting trending tokens for {network}")
+            logger.info(f"Getting trending tokens for {network} - {analysis_type} analysis")
             trending = await self.momentum_tracker.get_trending_tokens(
-                network=network, hours_back=24, limit=5
+                network=network, hours_back=24, limit=10  # Get more to sort from
             )
             
             if not trending:
@@ -645,16 +985,64 @@ class TelegramService:
             
             logger.info(f"Found {len(trending)} trending tokens")
             
-            trending_lines = ["🔥 **24H MOMENTUM RANKING**", ""]
+            # SORT BASED ON ANALYSIS TYPE
+            if analysis_type == 'buy':
+                # BUY: Sort by HIGHEST positive momentum (descending)
+                sorted_trending = sorted(trending, 
+                                    key=lambda x: x.get('net_momentum_score', 0), 
+                                    reverse=True)
+                title = "🔥 **24H BULLISH MOMENTUM RANKING**"
+                subtitle = "Showing highest positive momentum for buy opportunities"
+                
+            elif analysis_type == 'sell':
+                # SELL: Sort by LOWEST negative momentum (ascending - most negative first)
+                sorted_trending = sorted(trending, 
+                                    key=lambda x: x.get('net_momentum_score', 0), 
+                                    reverse=False)
+                title = "🔥 **24H BEARISH MOMENTUM RANKING**"
+                subtitle = "Showing strongest negative momentum for sell opportunities"
+                
+            else:
+                # DEFAULT: Sort by absolute momentum strength
+                sorted_trending = sorted(trending, 
+                                    key=lambda x: abs(x.get('net_momentum_score', 0)), 
+                                    reverse=True)
+                title = "🔥 **24H MOMENTUM RANKING**"
+                subtitle = "Showing strongest momentum in either direction"
             
-            for i, token_data in enumerate(trending[:3]):  # Top 3
+            trending_lines = [title, subtitle, ""]
+            
+            # Show top 7 tokens (increased from 3)
+            for i, token_data in enumerate(sorted_trending[:7]):
                 net_score = token_data.get('net_momentum_score', 0)
                 momentum_indicator = token_data.get('momentum_indicator', 'NEUTRAL')
                 buy_momentum = token_data.get('buy_momentum', 0)
                 sell_momentum = token_data.get('sell_momentum', 0)
                 
+                # Enhanced momentum display based on analysis type
+                if analysis_type == 'buy':
+                    if net_score >= 50:
+                        rank_emoji = "🚀"
+                    elif net_score >= 20:
+                        rank_emoji = "📈"
+                    elif net_score > 0:
+                        rank_emoji = "⬆️"
+                    else:
+                        rank_emoji = "➡️"
+                elif analysis_type == 'sell':
+                    if net_score <= -50:
+                        rank_emoji = "📉"
+                    elif net_score <= -20:
+                        rank_emoji = "⬇️"
+                    elif net_score < 0:
+                        rank_emoji = "📊"
+                    else:
+                        rank_emoji = "➡️"
+                else:
+                    rank_emoji = "⚡" if abs(net_score) > 30 else "📊"
+                
                 trending_lines.append(
-                    f"{i+1}. **{token_data['token_symbol']}** {momentum_indicator}"
+                    f"{rank_emoji} {i+1}. **{token_data['token_symbol']}** {momentum_indicator}"
                 )
                 trending_lines.append(
                     f"   Net: {net_score:+.1f} (💚{buy_momentum:+.1f} 💔-{sell_momentum:.1f})"
@@ -664,22 +1052,48 @@ class TelegramService:
                 if volume > 1.0:
                     trending_lines.append(f"   Volume: {volume:.2f} ETH")
                 
+                # Add alert count for context
+                alert_count = token_data.get('alert_count', 0)
+                if alert_count > 1:
+                    trending_lines.append(f"   Alerts: {alert_count} in 24h")
+                
                 trending_lines.append("")  # Spacing
             
+            # Enhanced legend based on analysis type
+            if analysis_type == 'buy':
+                legend_lines = [
+                    "📈 **Buy Strategy Legend:**",
+                    "🚀 = Strong bullish (+50+), 📈 = Bullish (+20+), ⬆️ = Positive (>0)",
+                    "💚 = Buy momentum, 💔 = Sell pressure",
+                    "**Focus on highest positive scores for buy opportunities**"
+                ]
+            elif analysis_type == 'sell':
+                legend_lines = [
+                    "📉 **Sell Strategy Legend:**",
+                    "📉 = Strong bearish (-50+), ⬇️ = Bearish (-20+), 📊 = Negative (<0)",
+                    "💚 = Buy momentum, 💔 = Sell pressure", 
+                    "**Focus on lowest negative scores for sell opportunities**"
+                ]
+            else:
+                legend_lines = [
+                    "📈 **Legend:**",
+                    "💚 = Buy momentum, 💔 = Sell pressure",
+                    "Net = Combined score (Buys - Sells)"
+                ]
+            
+            trending_lines.extend(legend_lines)
             trending_lines.extend([
-                "📈 **Legend:**",
-                "💚 = Buy momentum, 💔 = Sell pressure",
-                "Net = Combined score (Buys - Sells)",
                 "",
+                f"🌐 **Network:** {network.upper()}",
                 f"⏰ {datetime.now().strftime('%H:%M:%S UTC')}"
             ])
             
             message = '\n'.join(trending_lines)
-            logger.info(f"Sending trending summary: {len(message)} characters")
+            logger.info(f"Sending {analysis_type} trending summary: {len(message)} characters")
             
             success = await self.send_message(message)
             if success:
-                logger.info("Trending summary sent successfully")
+                logger.info(f"Trending summary sent successfully for {analysis_type} analysis")
             else:
                 logger.error("Failed to send trending summary message")
                 
@@ -687,10 +1101,27 @@ class TelegramService:
             logger.error(f"Trending summary failed: {e}")
             import traceback
             logger.error(f"Trending summary traceback: {traceback.format_exc()}")
-           
-    async def _send_analysis_summary(self, result, network: str, alerts_sent: int, min_alpha_score: float):
-        """Send analysis summary"""
+      
+    async def _send_analysis_summary(self, result, network: str, alerts_sent: int, min_alpha_score: float, prime_system=None):
+        """Send analysis summary with optional prime time context"""
+        
         network_info = get_network_info(network)
+        
+        # Prime time context (only if prime_system is provided)
+        if prime_system:
+            # Get prime time info
+            prime_info = prime_system.is_daily_prime_time(result.analysis_type)
+            
+            if prime_info['is_prime_time']:
+                prime_context = f"🕐 **DAILY PRIME TIME ANALYSIS**\n🎯 {prime_info['description']}\n⏰ Window: {prime_info.get('window_start', 'N/A')} - {prime_info.get('window_end', 'N/A')}"
+            else:
+                next_prime = prime_info.get('next_prime_time', 'N/A')
+                next_occurrence = prime_info.get('next_occurrence', 'tomorrow')
+                prime_context = f"📊 **Standard Analysis**\n⏰ Next prime time: {next_prime} {next_occurrence}"
+        else:
+            # Fallback for when called without prime_system (backward compatibility)
+            prime_context = f"📊 **{result.analysis_type.upper()} ANALYSIS**"
+        
         storage_info = ""
         if hasattr(result, 'performance_metrics'):
             transfers_stored = result.performance_metrics.get('transfers_stored', 0)
@@ -701,34 +1132,36 @@ class TelegramService:
         
         summary_message = f"""📊 **{result.analysis_type.upper()} ANALYSIS COMPLETE**
 
-✅ **Momentum-Enhanced Alerts:** {alerts_sent}
-📈 **Total Tokens Found:** {result.unique_tokens}
-💰 **Total ETH Volume:** {result.total_eth_value:.4f}
-🔍 **Filter:** min score {min_alpha_score}{storage_info}
+    {prime_context}
 
-🌐 **Network:** {network_info['name']} ({network_info['symbol']})
-🚀 **Features:** Web3 intel, momentum tracking, trending analysis
-⏰ {datetime.now().strftime('%H:%M:%S UTC')}"""
+    ✅ **Alerts Sent:** {alerts_sent}
+    📈 **Total Tokens Found:** {result.unique_tokens}
+    💰 **Total ETH Volume:** {result.total_eth_value:.4f}
+    🔍 **Filter:** min score {min_alpha_score}{storage_info}
+
+    🌐 **Network:** {network_info['name']} ({network_info['symbol']})
+    🚀 **Features:** Prime time priority, momentum tracking, Web3 intel
+    ⏰ {datetime.now().strftime('%H:%M:%S UTC')}"""
         
         await self.send_message(summary_message.strip())
-    
-    async def _send_no_alerts_message(self, result, network: str, min_alpha_score: float):
-        """Send message when no alerts qualify"""
-        network_info = get_network_info(network)
-        max_score = max([t[2] for t in result.ranked_tokens[:3]]) if result.ranked_tokens else 0
         
-        message = f"""📊 **{result.analysis_type.upper()} ANALYSIS - NO ALERTS**
+        async def _send_no_alerts_message(self, result, network: str, min_alpha_score: float):
+            """Send message when no alerts qualify"""
+            network_info = get_network_info(network)
+            max_score = max([t[2] for t in result.ranked_tokens[:3]]) if result.ranked_tokens else 0
+            
+            message = f"""📊 **{result.analysis_type.upper()} ANALYSIS - NO ALERTS**
 
-🌐 **Network:** {network_info['name']} ({network_info['symbol']})
-📊 **Tokens Found:** {result.unique_tokens}
-🚫 **Above {min_alpha_score} Score:** 0
-📈 **Highest Score:** {max_score:.1f}
+    🌐 **Network:** {network_info['name']} ({network_info['symbol']})
+    📊 **Tokens Found:** {result.unique_tokens}
+    🚫 **Above {min_alpha_score} Score:** 0
+    📈 **Highest Score:** {max_score:.1f}
 
-💡 **Tip:** Lower min_alpha_score for more alerts
-⏰ {datetime.now().strftime('%H:%M:%S UTC')}
-🚀 Momentum-Enhanced v3.2"""
-        
-        await self.send_message(message.strip())
+    💡 **Tip:** Lower min_alpha_score for more alerts
+    ⏰ {datetime.now().strftime('%H:%M:%S UTC')}
+    🚀 Momentum-Enhanced v3.2"""
+            
+            await self.send_message(message.strip())
 
     async def send_start_notification(self, network: str, analysis_type: str, num_wallets: int, 
                                     days_back: float, use_smart_timing: bool, max_tokens: int, 

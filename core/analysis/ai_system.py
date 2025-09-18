@@ -227,34 +227,202 @@ class AdvancedCryptoAI:
             return self._apply_heuristic_intelligence(token_symbol, network, token_info)
     
     async def _check_contract_verification_ai(self, session, contract_address: str, network: str) -> Dict:
-        """Check contract verification - optimized for AI analysis"""
+        """Enhanced contract verification with token age calculation"""
         try:
-            if network.lower() == 'ethereum':
-                url = f"https://api.etherscan.io/api?module=contract&action=getsourcecode&address={contract_address}&apikey=YourApiKeyToken"
-            elif network.lower() == 'base':
-                url = f"https://api.basescan.org/api?module=contract&action=getsourcecode&address={contract_address}"
-            else:
-                return {}
+            from utils.config import Config
+            config = Config()
             
-            async with session.get(url) as response:
+            if not config.etherscan_api_key:
+                logger.debug("No Etherscan API key - returning unverified")
+                return {'is_verified': False, 'source': 'no_api_key'}
+            
+            # Get chain ID for network from your config
+            chain_id = config.chain_ids.get(network.lower())
+            if not chain_id:
+                logger.debug(f"No chain ID configured for {network} - returning unverified")
+                return {'is_verified': False, 'source': 'unsupported_network'}
+            
+            # Build API URL using your config
+            url = f"{config.etherscan_endpoint}?chainid={chain_id}&module=contract&action=getsourcecode&address={contract_address}&apikey={config.etherscan_api_key}"
+            
+            # Apply rate limiting from your config
+            await asyncio.sleep(config.etherscan_api_rate_limit)
+            
+            logger.debug(f"🔍 API check: {contract_address[:10]}... on {network} (chain {chain_id})")
+            
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=12)) as response:
                 if response.status == 200:
                     data = await response.json()
+                    
+                    # Handle API errors
+                    if data.get('status') == '0':
+                        error_msg = data.get('message', 'Unknown error')
+                        logger.debug(f"API error for {network}: {error_msg}")
+                        return {'is_verified': False, 'source': 'api_error', 'error': error_msg}
+                    
+                    # Parse successful response
                     if data.get('status') == '1' and data.get('result'):
                         result = data['result'][0] if isinstance(data['result'], list) else data['result']
+                        
                         source_code = result.get('SourceCode', '')
-                        is_verified = bool(source_code and source_code.strip())
+                        contract_name = result.get('ContractName', '')
+                        
+                        # Simple verification check
+                        has_source = bool(source_code and source_code.strip() and 
+                                        source_code not in ['', '{{}}', 'Contract source code not verified'])
+                        
+                        is_verified = has_source
+                        
+                        # ENHANCED: Get token age
+                        token_age_hours = await self._get_token_age(session, contract_address, chain_id, config)
+                        
+                        if is_verified:
+                            logger.info(f"✅ {network.upper()} verified: {contract_name} ({contract_address[:10]}...)")
+                        else:
+                            logger.info(f"❌ {network.upper()} unverified: ({contract_address[:10]}...)")
                         
                         return {
                             'is_verified': is_verified,
-                            'contract_name': result.get('ContractName', ''),
-                            'source': f'{network}_explorer'
+                            'contract_name': contract_name or 'Unknown',
+                            'compiler_version': result.get('CompilerVersion', ''),
+                            'optimization_used': result.get('OptimizationUsed') == '1',
+                            'has_source_code': has_source,
+                            'chain_id': chain_id,
+                            'token_age_hours': token_age_hours,  # Added token age
+                            'source': 'etherscan'
                         }
+                    else:
+                        logger.debug(f"API no result for {contract_address}")
+                        return {'is_verified': False, 'source': 'no_result'}
+                
+                else:
+                    logger.debug(f"API HTTP {response.status} for {network}")
+                    return {'is_verified': False, 'source': f'http_{response.status}'}
         
         except Exception as e:
-            logger.debug(f"Contract verification check failed: {e}")
-        
-        return {}
-    
+            logger.debug(f"API exception: {e}")
+            return {'is_verified': False, 'source': 'exception', 'error': str(e)}
+
+    async def _get_token_age(self, session, contract_address: str, chain_id: int, config) -> float:
+        """Get token age using API for contract creation"""
+        try:
+            # Use V2 API to get first transaction (contract creation)
+            creation_url = f"{config.etherscan_endpoint}?chainid={chain_id}&module=account&action=txlist&address={contract_address}&startblock=0&endblock=99999999&page=1&offset=1&sort=asc&apikey={config.etherscan_api_key}"
+            
+            # Apply rate limiting
+            await asyncio.sleep(config.etherscan_api_rate_limit)
+            
+            async with session.get(creation_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('status') == '1' and data.get('result'):
+                        transactions = data.get('result', [])
+                        if transactions:
+                            first_tx = transactions[0]
+                            creation_timestamp = int(first_tx.get('timeStamp', 0))
+                            
+                            if creation_timestamp > 0:
+                                age_seconds = datetime.now().timestamp() - creation_timestamp
+                                token_age_hours = age_seconds / 3600
+                                
+                                logger.debug(f"🕐 Token age: {token_age_hours:.1f} hours ({token_age_hours/24:.1f} days)")
+                                return token_age_hours
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Token age calculation failed: {e}")
+            return None
+
+    async def _get_holder_data(self, session, contract_address: str, network: str) -> Dict:
+        """Enhanced holder data collection using your API config"""
+        try:
+            from utils.config import Config
+            config = Config()
+            
+            if not config.etherscan_api_key:
+                return {'holder_count': None, 'source': 'no_api_key'}
+            
+            # Get chain ID for network from your config
+            chain_id = config.chain_ids.get(network.lower())
+            if not chain_id:
+                return {'holder_count': None, 'source': 'unsupported_network'}
+            
+            # Use API for holder data
+            holder_url = f"{config.etherscan_endpoint}?chainid={chain_id}&module=token&action=tokenholderlist&contractaddress={contract_address}&page=1&offset=100&apikey={config.etherscan_api_key}"
+            
+            # Apply rate limiting from your config
+            await asyncio.sleep(config.etherscan_api_rate_limit)
+            
+            async with session.get(holder_url, timeout=aiohttp.ClientTimeout(total=12)) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('status') == '1' and data.get('result'):
+                        holders = data.get('result', [])
+                        holder_count = len(holders)
+                        
+                        # Calculate holder concentration if we have data
+                        concentration_data = {}
+                        if holder_count > 1:
+                            try:
+                                balances = []
+                                for holder in holders:
+                                    balance = float(holder.get('TokenHolderQuantity', 0))
+                                    balances.append(balance)
+                                
+                                if balances:
+                                    total_supply = sum(balances)
+                                    if total_supply > 0:
+                                        top_holder_percent = max(balances) / total_supply
+                                        concentration_data['top_holder_concentration'] = top_holder_percent
+                                        concentration_data['gini_coefficient'] = self._calculate_gini(balances)
+                            except Exception as e:
+                                logger.debug(f"Concentration calculation failed: {e}")
+                        
+                        logger.info(f"📊 API: {contract_address[:10]}... has {holder_count} holders")
+                        
+                        return {
+                            'holder_count': holder_count,
+                            'chain_id': chain_id,
+                            'source': 'etherscan',
+                            **concentration_data
+                        }
+                    else:
+                        error_msg = data.get('message', 'Unknown error')
+                        logger.debug(f"API holder error: {error_msg}")
+                        return {'holder_count': None, 'source': 'api_error', 'error': error_msg}
+                else:
+                    logger.debug(f"API holder HTTP {response.status}")
+                    return {'holder_count': None, 'source': f'http_{response.status}'}
+            
+        except Exception as e:
+            logger.debug(f"Enhanced holder data failed: {e}")
+            return {'holder_count': None, 'source': 'exception', 'error': str(e)}
+
+    def _calculate_gini(balances: list) -> float:
+        """Calculate Gini coefficient for holder distribution"""
+        try:
+            if not balances or len(balances) < 2:
+                return 0.0
+            
+            # Sort balances
+            sorted_balances = sorted(balances)
+            n = len(sorted_balances)
+            
+            # Calculate Gini coefficient
+            cumulative_sum = sum((i + 1) * balance for i, balance in enumerate(sorted_balances))
+            total_sum = sum(sorted_balances)
+            
+            if total_sum == 0:
+                return 0.0
+            
+            gini = (2 * cumulative_sum) / (n * total_sum) - (n + 1) / n
+            return max(0.0, min(1.0, gini))  # Clamp between 0 and 1
+            
+        except Exception as e:
+            logger.debug(f"Gini calculation failed: {e}")
+            return 0.0
+
     async def _check_dexscreener_liquidity_ai(self, session, contract_address: str) -> Dict:
         """Check DexScreener liquidity - optimized for AI analysis"""
         try:
@@ -453,6 +621,10 @@ class AdvancedCryptoAI:
                 if holder_count is None:
                     holder_count = 0
                 
+                # FIXED: Safe smart money extraction with proper defaults
+                smart_money_buying = web3_data.get('smart_money_buying', False)
+                whale_accumulation = web3_data.get('whale_accumulation', False)
+                
                 # Core data with Web3 enhancements
                 row = {
                     # Basic data
@@ -471,8 +643,8 @@ class AdvancedCryptoAI:
                     'has_liquidity': bool(has_liquidity),
                     'liquidity_usd': float(liquidity_usd),
                     'honeypot_risk': float(honeypot_risk),
-                    'smart_money_buying': bool(web3_data.get('smart_money_buying', False)),
-                    'whale_accumulation': bool(web3_data.get('whale_accumulation', False)),
+                    'smart_money_buying': bool(smart_money_buying),
+                    'whale_accumulation': bool(whale_accumulation),
                     'has_coingecko_listing': bool(web3_data.get('has_coingecko_listing', False)),
                     'data_sources_count': len(web3_data.get('data_sources', [])),                    
                     'token_age_hours': float(token_age_hours),
@@ -500,17 +672,22 @@ class AdvancedCryptoAI:
         # FIXED: Safe new token detection
         df['is_new_token'] = df['token_age_hours'] < 168  # Less than 1 week
         
+        # FIXED: Create has_smart_money column safely - THIS WAS THE ISSUE
+        df['has_smart_money'] = df['smart_money_buying'] | df['whale_accumulation']
+        
         # Log Web3 intelligence statistics
         verified_count = df['is_verified'].sum()
         liquidity_count = df['has_liquidity'].sum()
         api_data_count = df['has_api_data'].sum()
         new_token_count = df['is_new_token'].sum()
+        smart_money_count = df['has_smart_money'].sum()  # Now safe to use
         
         logger.info(f"🤖 AI DataFrame with Web3: {len(df)} purchases")
         logger.info(f"✅ Verified: {verified_count}/{len(df)} ({verified_count/len(df)*100:.1f}%)")
         logger.info(f"💧 With liquidity: {liquidity_count}/{len(df)} ({liquidity_count/len(df)*100:.1f}%)")
         logger.info(f"🔍 API data: {api_data_count}/{len(df)} ({api_data_count/len(df)*100:.1f}%)")
         logger.info(f"🆕 New tokens: {new_token_count}/{len(df)} ({new_token_count/len(df)*100:.1f}%)")
+        logger.info(f"🧠 Smart money: {smart_money_count}/{len(df)} ({smart_money_count/len(df)*100:.1f}%)")
         
         return df
 
@@ -877,11 +1054,21 @@ class AdvancedCryptoAI:
         # Smart money involvement
         smart_ratio = len(df[df['is_smart_wallet']]) / len(df)
         
+        # FIXED: Safe check for is_new_token column
         if 'is_new_token' in df.columns:
             new_token_ratio = len(df[df['is_new_token']]) / len(df)
         else:
             # Fallback: calculate based on token_age_hours
             new_token_ratio = len(df[df['token_age_hours'] < 168]) / len(df) if 'token_age_hours' in df.columns else 0
+        
+        # FIXED: Safe check for has_smart_money column (this was causing the error)
+        smart_money_active = 0
+        if 'has_smart_money' in df.columns:
+            smart_money_active = 0.15 if df['has_smart_money'].any() else 0
+        else:
+            # Fallback: check individual components
+            if 'smart_money_buying' in df.columns and 'whale_accumulation' in df.columns:
+                smart_money_active = 0.15 if (df['smart_money_buying'].any() or df['whale_accumulation'].any()) else 0
         
         # Calculate pump score
         pump_score = (
@@ -889,7 +1076,7 @@ class AdvancedCryptoAI:
             min((wallet_growth - 1) * 0.2, 0.2) +
             min(smart_ratio * 0.2, 0.2) +
             (0.15 if new_token_ratio > 0.5 else 0) +
-            (0.15 if df['has_smart_money'].any() else 0)
+            smart_money_active  # Now safely calculated
         )
         
         detected = pump_score >= 0.65  # threshold
@@ -902,9 +1089,9 @@ class AdvancedCryptoAI:
             'phase': self._get_pump_phase(pump_score),
             'confidence': min(pump_score * 1.2, 1.0)
         }
-        
+    
     def _analyze_smart_money_flow(self, df: pd.DataFrame) -> Dict:
-        """Analyze smart money flow - efficient approach"""
+        """Analyze smart money flow - FIXED column access"""
         if df.empty:
             return {'flow_direction': 'NEUTRAL', 'confidence': 0}
         
@@ -913,9 +1100,14 @@ class AdvancedCryptoAI:
         total_volume = df['eth_value'].sum()
         smart_ratio = smart_volume / total_volume if total_volume > 0 else 0
         
-        # Smart money signals
-        smart_money_buying = df['smart_money_buying'].sum()
-        whale_accumulation = df['whale_accumulation'].sum()
+        # FIXED: Safe smart money signals check
+        smart_money_buying = 0
+        whale_accumulation = 0
+        
+        if 'smart_money_buying' in df.columns:
+            smart_money_buying = df['smart_money_buying'].sum()
+        if 'whale_accumulation' in df.columns:
+            whale_accumulation = df['whale_accumulation'].sum()
         
         # Determine flow direction
         if smart_ratio > 0.4 or smart_money_buying > 0:

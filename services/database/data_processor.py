@@ -569,25 +569,29 @@ class UnifiedDataProcessor:
         return self._session
     
     async def _check_contract_verification(self, session, contract_address: str, network: str) -> Dict:
-        """Simple contract verification using only Etherscan V2 API"""
+        """Contract verification using your V2 API config"""
         try:
+            if not contract_address or len(contract_address) != 42:
+                return {'is_verified': False, 'source': 'invalid_address'}
+            
+            # Use your config
             if not self.config.etherscan_api_key:
                 logger.debug("No Etherscan API key - returning unverified")
                 return {'is_verified': False, 'source': 'no_api_key'}
             
-            # Get chain ID for network
+            # Get chain ID for network from your config
             chain_id = self.config.chain_ids.get(network.lower())
             if not chain_id:
                 logger.debug(f"No chain ID configured for {network} - returning unverified")
                 return {'is_verified': False, 'source': 'unsupported_network'}
             
-            # Build V2 API URL
+            # Build API URL using your config
             url = f"{self.config.etherscan_endpoint}?chainid={chain_id}&module=contract&action=getsourcecode&address={contract_address}&apikey={self.config.etherscan_api_key}"
             
-            # Apply rate limiting
+            # Apply rate limiting from your config
             await asyncio.sleep(self.config.etherscan_api_rate_limit)
             
-            logger.debug(f"🔍 V2 API check: {contract_address[:10]}... on {network} (chain {chain_id})")
+            logger.debug(f"🔍 Contract verification: {contract_address[:10]}... on {network} (chain {chain_id})")
             
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=12)) as response:
                 if response.status == 200:
@@ -596,8 +600,14 @@ class UnifiedDataProcessor:
                     # Handle API errors
                     if data.get('status') == '0':
                         error_msg = data.get('message', 'Unknown error')
-                        logger.debug(f"V2 API error for {network}: {error_msg}")
-                        return {'is_verified': False, 'source': 'api_error', 'error': error_msg}
+                        logger.debug(f"API error for {network}: {error_msg}")
+                        
+                        if "rate limit" in error_msg.lower():
+                            return {'is_verified': False, 'source': 'rate_limited'}
+                        elif "invalid" in error_msg.lower():
+                            return {'is_verified': False, 'source': 'invalid_api_key'}
+                        else:
+                            return {'is_verified': False, 'source': 'api_error', 'error': error_msg}
                     
                     # Parse successful response
                     if data.get('status') == '1' and data.get('result'):
@@ -606,16 +616,19 @@ class UnifiedDataProcessor:
                         source_code = result.get('SourceCode', '')
                         contract_name = result.get('ContractName', '')
                         
-                        # Simple verification check
+                        # Verification check
                         has_source = bool(source_code and source_code.strip() and 
                                         source_code not in ['', '{{}}', 'Contract source code not verified'])
                         
                         is_verified = has_source
                         
+                        # Get token age
+                        token_age_hours = await self._get_token_age_from_api(session, contract_address, chain_id)
+                        
                         if is_verified:
-                            logger.info(f"✅ V2 {network.upper()} verified: {contract_name} ({contract_address[:10]}...)")
+                            logger.info(f"✅ {network.upper()} verified: {contract_name} ({contract_address[:10]}...)")
                         else:
-                            logger.info(f"❌ V2 {network.upper()} unverified: ({contract_address[:10]}...)")
+                            logger.info(f"❌ {network.upper()} unverified: ({contract_address[:10]}...)")
                         
                         return {
                             'is_verified': is_verified,
@@ -624,19 +637,245 @@ class UnifiedDataProcessor:
                             'optimization_used': result.get('OptimizationUsed') == '1',
                             'has_source_code': has_source,
                             'chain_id': chain_id,
-                            'source': 'etherscan_v2'
+                            'token_age_hours': token_age_hours,
+                            'source': 'etherscan'
                         }
                     else:
-                        logger.debug(f"V2 API no result for {contract_address}")
+                        logger.debug(f"API no result for {contract_address}")
                         return {'is_verified': False, 'source': 'no_result'}
                 
+                elif response.status == 403:
+                    return {'is_verified': False, 'source': 'forbidden'}
+                elif response.status == 429:
+                    return {'is_verified': False, 'source': 'rate_limited'}
                 else:
-                    logger.debug(f"V2 API HTTP {response.status} for {network}")
+                    logger.debug(f"API HTTP {response.status} for {network}")
                     return {'is_verified': False, 'source': f'http_{response.status}'}
         
         except Exception as e:
-            logger.debug(f"V2 API exception: {e}")
+            logger.debug(f"Contract verification exception: {e}")
             return {'is_verified': False, 'source': 'exception', 'error': str(e)}
+
+    async def _get_token_age_from_api(self, session, contract_address: str, chain_id: int) -> float:
+        """Get token age using your API config"""
+        try:
+            # Get first transaction (contract creation) using your config
+            creation_url = f"{self.config.etherscan_endpoint}?chainid={chain_id}&module=account&action=txlist&address={contract_address}&startblock=0&endblock=99999999&page=1&offset=1&sort=asc&apikey={self.config.etherscan_api_key}"
+            
+            # Apply rate limiting
+            await asyncio.sleep(self.config.etherscan_api_rate_limit)
+            
+            async with session.get(creation_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('status') == '1' and data.get('result'):
+                        transactions = data.get('result', [])
+                        if transactions:
+                            first_tx = transactions[0]
+                            creation_timestamp = int(first_tx.get('timeStamp', 0))
+                            
+                            if creation_timestamp > 0:
+                                age_seconds = datetime.now().timestamp() - creation_timestamp
+                                token_age_hours = age_seconds / 3600
+                                
+                                logger.debug(f"🕐 Token age: {token_age_hours:.1f} hours ({token_age_hours/24:.1f} days)")
+                                return token_age_hours
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Token age calculation failed: {e}")
+            return None
+
+    async def _get_holder_data_from_api(self, session, contract_address: str, network: str) -> Dict:
+        """Get holder data using your API config with Gini coefficient"""
+        try:
+            if not self.config.etherscan_api_key:
+                return {'holder_count': None, 'source': 'no_api_key'}
+            
+            # Get chain ID for network from your config
+            chain_id = self.config.chain_ids.get(network.lower())
+            if not chain_id:
+                return {'holder_count': None, 'source': 'unsupported_network'}
+            
+            # Use API for holder data
+            holder_url = f"{self.config.etherscan_endpoint}?chainid={chain_id}&module=token&action=tokenholderlist&contractaddress={contract_address}&page=1&offset=100&apikey={self.config.etherscan_api_key}"
+            
+            # Apply rate limiting from your config
+            await asyncio.sleep(self.config.etherscan_api_rate_limit)
+            
+            async with session.get(holder_url, timeout=aiohttp.ClientTimeout(total=12)) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('status') == '1' and data.get('result'):
+                        holders = data.get('result', [])
+                        holder_count = len(holders)
+                        
+                        # Calculate holder concentration with Gini coefficient
+                        concentration_data = {}
+                        if holder_count > 1:
+                            try:
+                                balances = []
+                                for holder in holders:
+                                    balance = float(holder.get('TokenHolderQuantity', 0))
+                                    balances.append(balance)
+                                
+                                if balances and sum(balances) > 0:
+                                    total_supply = sum(balances)
+                                    top_holder_percent = max(balances) / total_supply
+                                    
+                                    # Calculate Gini coefficient
+                                    gini_coefficient = self._calculate_gini_coefficient(balances)
+                                    
+                                    concentration_data.update({
+                                        'top_holder_concentration': top_holder_percent,
+                                        'gini_coefficient': gini_coefficient,
+                                        'concentration_risk': self._assess_concentration_risk(gini_coefficient, top_holder_percent),
+                                        'distribution_quality': self._get_distribution_quality(gini_coefficient)
+                                    })
+                                    
+                            except Exception as e:
+                                logger.debug(f"Concentration calculation failed: {e}")
+                        
+                        logger.info(f"📊 {contract_address[:10]}... has {holder_count} holders (Gini: {concentration_data.get('gini_coefficient', 'N/A')})")
+                        
+                        return {
+                            'holder_count': holder_count,
+                            'chain_id': chain_id,
+                            'source': 'etherscan',
+                            **concentration_data
+                        }
+                    else:
+                        error_msg = data.get('message', 'Unknown error')
+                        logger.debug(f"API holder error: {error_msg}")
+                        return {'holder_count': None, 'source': 'api_error', 'error': error_msg}
+                else:
+                    logger.debug(f"API holder HTTP {response.status}")
+                    return {'holder_count': None, 'source': f'http_{response.status}'}
+            
+        except Exception as e:
+            logger.debug(f"Holder data failed: {e}")
+            return {'holder_count': None, 'source': 'exception', 'error': str(e)}
+
+    def _calculate_gini_coefficient(self, balances: list) -> float:
+        """Calculate Gini coefficient for holder distribution (0=equal, 1=unequal)"""
+        try:
+            if not balances or len(balances) < 2:
+                return 0.0
+            
+            # Remove zero balances and sort
+            positive_balances = [b for b in balances if b > 0]
+            if len(positive_balances) < 2:
+                return 0.0
+                
+            sorted_balances = sorted(positive_balances)
+            n = len(sorted_balances)
+            
+            # Calculate Gini coefficient using the standard formula
+            cumulative_sum = 0
+            for i, balance in enumerate(sorted_balances):
+                cumulative_sum += (i + 1) * balance
+            
+            total_sum = sum(sorted_balances)
+            
+            if total_sum == 0:
+                return 0.0
+            
+            gini = (2 * cumulative_sum) / (n * total_sum) - (n + 1) / n
+            
+            # Clamp between 0 and 1
+            return max(0.0, min(1.0, gini))
+            
+        except Exception as e:
+            logger.debug(f"Gini calculation failed: {e}")
+            return 0.0
+
+    def _assess_concentration_risk(self, gini: float, top_holder_percent: float) -> str:
+        """Assess concentration risk based on Gini and top holder percentage"""
+        try:
+            if gini is None or top_holder_percent is None:
+                return 'unknown'
+            
+            # Combined risk assessment
+            if gini >= 0.8 or top_holder_percent >= 0.5:
+                return 'very_high'  # Extreme concentration
+            elif gini >= 0.7 or top_holder_percent >= 0.3:
+                return 'high'       # High concentration
+            elif gini >= 0.5 or top_holder_percent >= 0.15:
+                return 'medium'     # Moderate concentration  
+            elif gini >= 0.3:
+                return 'low'        # Well distributed
+            else:
+                return 'very_low'   # Excellent distribution
+                
+        except:
+            return 'unknown'
+
+    def _get_distribution_quality(self, gini: float) -> str:
+        """Get human-readable distribution quality"""
+        try:
+            if gini is None:
+                return 'Unknown'
+            elif gini >= 0.8:
+                return 'Very Poor (Whale Dominated)'
+            elif gini >= 0.7:
+                return 'Poor (Highly Concentrated)'
+            elif gini >= 0.5:
+                return 'Fair (Some Concentration)'
+            elif gini >= 0.3:
+                return 'Good (Well Distributed)'
+            else:
+                return 'Excellent (Very Even)'
+        except:
+            return 'Unknown'
+
+
+    async def _get_token_web3_intelligence(self, session, token_symbol: str, contract_address: str, network: str) -> Dict:
+        """UPDATED: Get Web3 intelligence using your API config"""
+        try:
+            if not contract_address or len(contract_address) != 42:
+                return self._default_web3_intelligence(token_symbol, network)
+            
+            intelligence = {
+                'contract_address': contract_address.lower(),
+                'ca': contract_address.lower(),
+                'token_symbol': token_symbol,
+                'network': network,
+                'is_verified': False,
+                'has_liquidity': False,
+                'liquidity_usd': 0,
+                'honeypot_risk': 0.3,
+                'data_sources': [],
+                'token_age_hours': None,
+                'holder_count': None
+            }
+            
+            # Run intelligence checks concurrently - UPDATED to use your API
+            tasks = [
+                self._check_contract_verification(session, contract_address, network),  # Uses your config now
+                self._check_dexscreener_liquidity(session, contract_address),
+                self._get_holder_data_from_api(session, contract_address, network)  # New method with your config
+            ]
+            
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Process results
+            for result in results:
+                if isinstance(result, dict) and result:
+                    intelligence.update(result)
+                    if result.get('source'):
+                        intelligence['data_sources'].append(result['source'])
+            
+            # Apply heuristics if no API data
+            if not intelligence['data_sources']:
+                intelligence = self._apply_heuristic_analysis(intelligence, token_symbol)
+            
+            return intelligence
+            
+        except Exception as e:
+            logger.debug(f"Token Web3 intelligence failed for {token_symbol}: {e}")
+            return self._default_web3_intelligence(token_symbol, network)
+
     
     async def _check_dexscreener_liquidity(self, session, contract_address: str) -> Dict:
         """Enhanced DexScreener liquidity check with better error handling"""
@@ -735,8 +974,17 @@ class UnifiedDataProcessor:
         
         return {}
     
-    def _apply_heuristic_analysis(self, intelligence: Dict, token_symbol: str) -> Dict:
-        """Apply heuristic analysis for well-known tokens"""
+    async def debug_web3_config(self):
+        """Debug your Web3 configuration"""
+        logger.info("=== WEB3 CONFIG DEBUG ===")
+        logger.info(f"Etherscan API key: {self.config.etherscan_api_key[:10]}...{self.config.etherscan_api_key[-5:] if self.config.etherscan_api_key else 'None'}")
+        logger.info(f"Etherscan endpoint: {self.config.etherscan_endpoint}")
+        logger.info(f"Chain IDs: {self.config.chain_ids}")
+        logger.info(f"Rate limit: {self.config.etherscan_api_rate_limit}")
+        logger.info("========================")
+    
+    def _apply_heuristic_intelligence(self, intelligence: Dict, token_symbol: str) -> Dict:
+        """Apply heuristic intelligence with estimated Gini for well-known tokens"""
         
         # If we have API data, use it
         if intelligence.get('data_sources'):
@@ -744,24 +992,60 @@ class UnifiedDataProcessor:
         
         symbol_upper = token_symbol.upper()
         
-        # Major tokens
+        # Major tokens - assume good distribution
         if symbol_upper in ['WETH', 'USDC', 'USDT', 'DAI', 'ETH']:
             intelligence.update({
                 'is_verified': True,
                 'has_liquidity': True,
-                'honeypot_risk': 0.2
+                'honeypot_risk': 0.0,
+                'holder_count': 50000,  # Estimate for major tokens
+                'gini_coefficient': 0.4,  # Good distribution estimate
+                'distribution_quality': 'Good (Well Distributed)',
+                'concentration_risk': 'low',
+                'heuristic_classification': 'major_token'
             })
-        # Unknown tokens
+        
+        # DeFi tokens - usually well distributed
+        elif symbol_upper in ['UNI', 'AAVE', 'COMP', 'MKR', 'SNX', 'SUSHI', 'CRV']:
+            intelligence.update({
+                'is_verified': True,
+                'has_liquidity': True,
+                'honeypot_risk': 0.1,
+                'holder_count': 10000,  # Estimate for DeFi
+                'gini_coefficient': 0.5,  # Fair distribution
+                'distribution_quality': 'Fair (Some Concentration)',
+                'concentration_risk': 'medium',
+                'heuristic_classification': 'defi_token'
+            })
+        
+        # Meme tokens - often concentrated
+        elif symbol_upper in ['PEPE', 'SHIB', 'DOGE', 'FLOKI', 'WIF', 'BONK']:
+            intelligence.update({
+                'is_verified': True,
+                'has_liquidity': True,
+                'honeypot_risk': 0.2,
+                'holder_count': 5000,   # Estimate for memes
+                'gini_coefficient': 0.7,  # Often concentrated
+                'distribution_quality': 'Poor (Highly Concentrated)',
+                'concentration_risk': 'high',
+                'heuristic_classification': 'meme_token'
+            })
+        
+        # Unknown tokens - assume poor distribution until proven otherwise
         else:
             intelligence.update({
                 'is_verified': False,
                 'has_liquidity': False,
                 'honeypot_risk': 0.5,
+                'holder_count': 100,    # Low estimate
+                'gini_coefficient': 0.8,  # Assume concentrated
+                'distribution_quality': 'Very Poor (Whale Dominated)',
+                'concentration_risk': 'very_high',
                 'heuristic_classification': 'unknown'
             })
         
         return intelligence
-    
+
     def _default_web3_intelligence(self, token_symbol: str, network: str) -> Dict:
         """Default Web3 intelligence when APIs fail"""
         return {

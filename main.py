@@ -4,23 +4,62 @@ import logging
 from datetime import datetime, timedelta
 import traceback
 import hashlib
+import numpy as np  # Added for numpy type conversion
 
 try:
     import orjson as json
     def json_dumps(data):
-        return json.dumps(data).decode('utf-8')
+        # Convert numpy types to Python types for orjson
+        def convert_numpy(obj):
+            if isinstance(obj, np.integer):
+                return int(obj)
+            elif isinstance(obj, np.floating):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {key: convert_numpy(value) for key, value in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_numpy(item) for item in obj]
+            elif isinstance(obj, tuple):
+                return tuple(convert_numpy(item) for item in obj)
+            return obj
+        
+        # Convert numpy types before serializing
+        converted_data = convert_numpy(data)
+        return json.dumps(converted_data).decode('utf-8')
+        
     def json_loads(data):
         return json.loads(data)
     logger = logging.getLogger(__name__)
-    logger.info("🚀 Using orjson for 3x faster JSON processing")
+    logger.info("🚀 Using orjson for 3x faster JSON processing with numpy support")
 except ImportError:
     import json
     def json_dumps(data):
-        return json.dumps(data)
+        # Convert numpy types to Python types for standard json
+        def convert_numpy(obj):
+            if isinstance(obj, np.integer):
+                return int(obj)
+            elif isinstance(obj, np.floating):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {key: convert_numpy(value) for key, value in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_numpy(item) for item in obj]
+            elif isinstance(obj, tuple):
+                return tuple(convert_numpy(item) for item in obj)
+            return obj
+        
+        # Convert numpy types before serializing
+        converted_data = convert_numpy(data)
+        return json.dumps(converted_data)
+        
     def json_loads(data):
         return json.loads(data)
     logger = logging.getLogger(__name__)
-    logger.warning("⚠️ orjson not available, using standard json")
+    logger.warning("⚠️ orjson not available, using standard json with numpy support")
 
 # Cloud Functions imports
 import functions_framework
@@ -156,7 +195,7 @@ async def initialize_services():
 def main(request: Request):
     """Cloud Functions HTTP entry point with orjson performance and duplicate prevention"""
     
-    logger.info("🚀 Cloud Function started with orjson + duplicate prevention")
+    logger.info("🚀 Cloud Function started with orjson + duplicate prevention + numpy support")
     
     # Initialize services on first request
     try:
@@ -193,7 +232,7 @@ def main(request: Request):
         if request.method == 'GET':
             path = request.path or request.url.path
         
-            if path == '/debug-etherscan':  # ADD THIS
+            if path == '/debug-etherscan':  
                 return asyncio.run(handle_etherscan_debug(headers))
             else:       
                 return asyncio.run(handle_health_check(headers))
@@ -372,17 +411,17 @@ async def handle_health_check(headers):
         run_history = await analysis_handler.get_run_history(5)
         
         response = {
-            "message": "Crypto Analysis Function with orjson Performance + Duplicate Prevention",
+            "message": "Crypto Analysis Function with orjson Performance + Duplicate Prevention + Numpy Support",
             "status": "healthy",
-            "version": "8.2.0-orjson-dedup",
+            "version": "8.3.0-orjson-dedup-numpy",
             "service": "crypto-analysis-cloud-function",
             "timestamp": datetime.utcnow().isoformat(),
             "initialized": _initialized,
             "telegram_configured": telegram_service.is_configured(),
             "database_type": "BigQuery",
-            "ai_library": "Enhanced AI",
+            "ai_library": "Enhanced AI with Web3 Intelligence",
             "architecture": "modular",
-            "performance_boost": "orjson (3x faster JSON)",
+            "performance_boost": "orjson (3x faster JSON) + numpy support",
             "duplicate_prevention": "enabled (60s window)",
             "last_run_tracking": analysis_handler.last_run_tracker and analysis_handler.last_run_tracker.is_available(),
             "recent_runs": run_history,
@@ -398,13 +437,16 @@ async def handle_health_check(headers):
             },
             "features": [
                 "orjson Performance Boost (3x faster)",
+                "Numpy Type Support (no serialization errors)",
                 "Duplicate Request Prevention (60s window)",
-                "Enhanced AI Analysis", 
+                "Enhanced AI Analysis with Web3 Intelligence", 
+                "Token Age & Holder Count Display",
+                "Contract Verification Status",
                 "ML Anomaly Detection", 
                 "Sentiment Analysis",
                 "Whale Coordination Detection",
                 "Smart Money Flow Analysis",
-                "Telegram notifications",
+                "Telegram notifications with enhanced formatting",
                 "Smart Timing (automatic days_back calculation)",
                 "Last Run Tracking (BigQuery)",
                 "Contract Address Extraction",
@@ -485,7 +527,7 @@ async def handle_analysis_request_with_deduplication(request: Request, headers):
             }
             logger.info(f"✅ Request completed: {request_hash} (status: {status_code})")
         
-        # Use orjson for 3x faster response serialization
+        # Use orjson for 3x faster response serialization with numpy support
         return (json_dumps(result), status_code, headers)
         
     except Exception as e:
@@ -502,6 +544,6 @@ async def handle_analysis_request_with_deduplication(request: Request, headers):
     
 # For local testing
 if __name__ == "__main__":
-    logger.info("Starting local test with orjson performance boost + duplicate prevention")
+    logger.info("Starting local test with orjson performance boost + duplicate prevention + numpy support")
     asyncio.run(initialize_services())
-    print("Function ready for local testing with 3x faster JSON processing and duplicate prevention.")
+    print("Function ready for local testing with 3x faster JSON processing, duplicate prevention, and numpy support.")

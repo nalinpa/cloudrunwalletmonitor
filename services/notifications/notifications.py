@@ -458,7 +458,7 @@ def get_network_info(network: str) -> Dict[str, str]:
     return network_configs.get(network.lower(), network_configs['ethereum'])
 
 def format_enhanced_alert_message(alert: dict) -> str:
-    """Format enhanced alert with Web3 intelligence, prominent token age and holder count"""
+    """Format enhanced alert with PROMINENT token age and holder count"""
     data = alert.get('data', {})
     alert_type = alert.get('alert_type', 'unknown')
     token = alert.get('token', 'UNKNOWN')
@@ -495,7 +495,7 @@ def format_enhanced_alert_message(alert: dict) -> str:
         wallet_count = data.get('wallet_count', data.get('unique_wallets', 0))
         tx_count = data.get('total_sells', data.get('transaction_count', 0))
 
-    # Extract token age and holder count for prominence
+    # ENHANCED: Extract token age and holder count for prominence
     token_age_hours = None
     holder_count = None
     
@@ -510,68 +510,81 @@ def format_enhanced_alert_message(alert: dict) -> str:
         if holder_count is None:
             holder_count = web3_data.get('holder_count')
 
-    # Format age and holder information with risk indicators
+    # ENHANCED: Format age and holder information with risk indicators
     def format_token_age(hours):
         if hours is None:
-            return "🕐 Age: Unknown"
+            return "🕐 Age: ❓ Unknown"
         
-        if hours < 1:
-            return f"🕐 Age: 🆕 {hours*60:.0f}min (BRAND NEW)"
-        elif hours < 24:
-            return f"🕐 Age: ⚡ {hours:.1f}h (FRESH)"
-        elif hours < 168:  # 1 week
-            days = hours / 24
-            return f"🕐 Age: 📅 {days:.1f}d (RECENT)"
-        elif hours < 720:  # 1 month
-            days = hours / 24
-            return f"🕐 Age: ✅ {days:.1f}d (ESTABLISHED)"
-        else:
-            days = hours / 24
-            return f"🕐 Age: 💎 {days:.0f}d (MATURE)"
+        try:
+            hours = float(hours)
+            if hours < 1:
+                return f"🕐 Age: 🆕 {hours*60:.0f}min (BRAND NEW)"
+            elif hours < 24:
+                return f"🕐 Age: ⚡ {hours:.1f}h (FRESH)"
+            elif hours < 168:  # 1 week
+                days = hours / 24
+                return f"🕐 Age: 📅 {days:.1f}d (RECENT)"
+            elif hours < 720:  # 1 month
+                days = hours / 24
+                return f"🕐 Age: ✅ {days:.1f}d (ESTABLISHED)"
+            else:
+                days = hours / 24
+                return f"🕐 Age: 💎 {days:.0f}d (MATURE)"
+        except (ValueError, TypeError):
+            return "🕐 Age: ❓ Unknown"
 
     def format_holder_count(count):
         if count is None:
-            return "👥 Holders: Unknown"
+            return "👥 Holders: ❓ Unknown"
         
-        if count < 50:
-            return f"👥 Holders: 🚨 {count} (RISKY)"
-        elif count < 200:
-            return f"👥 Holders: ⚠️ {count} (LOW)"
-        elif count < 1000:
-            return f"👥 Holders: ✅ {count:,} (GOOD)"
-        elif count < 5000:
-            return f"👥 Holders: 💚 {count:,} (STRONG)"
-        else:
-            return f"👥 Holders: 💎 {count:,} (WIDE)"
+        try:
+            count = int(count)
+            if count < 50:
+                return f"👥 Holders: 🚨 {count:,} (RISKY - LOW)"
+            elif count < 200:
+                return f"👥 Holders: ⚠️ {count:,} (CAUTION - LIMITED)"
+            elif count < 1000:
+                return f"👥 Holders: ✅ {count:,} (GOOD DISTRIBUTION)"
+            elif count < 5000:
+                return f"👥 Holders: 💚 {count:,} (STRONG BASE)"
+            else:
+                return f"👥 Holders: 💎 {count:,} (WIDE ADOPTION)"
+        except (ValueError, TypeError):
+            return "👥 Holders: ❓ Unknown"
 
     # Create age and holder display
     age_display = format_token_age(token_age_hours)
     holder_display = format_holder_count(holder_count)
     
-    # Generate combined risk assessment
+    # ENHANCED: Generate combined risk assessment
     def get_combined_risk_indicator(age_hours, holders):
         risk_signals = []
         
-        if age_hours is not None and age_hours < 24:
-            risk_signals.append("NEW")
-        if holders is not None and holders < 50:
-            risk_signals.append("FEW HOLDERS")
-            
-        if len(risk_signals) >= 2:
-            return "🚨 HIGH RISK: " + " + ".join(risk_signals)
-        elif len(risk_signals) == 1:
-            return "⚠️ CAUTION: " + risk_signals[0]
-        elif age_hours is not None and holders is not None:
-            if age_hours > 720 and holders > 1000:
-                return "✅ LOW RISK: Established + Wide distribution"
-            elif age_hours > 168 and holders > 200:
-                return "💡 MODERATE RISK: Growing project"
+        try:
+            if age_hours is not None and float(age_hours) < 24:
+                risk_signals.append("NEW TOKEN")
+            if holders is not None and int(holders) < 50:
+                risk_signals.append("FEW HOLDERS")
+                
+            if len(risk_signals) >= 2:
+                return "🚨 HIGH RISK: " + " + ".join(risk_signals)
+            elif len(risk_signals) == 1:
+                return "⚠️ CAUTION: " + risk_signals[0]
+            elif age_hours is not None and holders is not None:
+                age_val = float(age_hours)
+                holder_val = int(holders)
+                if age_val > 720 and holder_val > 1000:
+                    return "✅ LOW RISK: Established + Wide distribution"
+                elif age_val > 168 and holder_val > 200:
+                    return "💡 MODERATE RISK: Growing project"
+        except (ValueError, TypeError):
+            pass
         
         return None
 
     risk_indicator = get_combined_risk_indicator(token_age_hours, holder_count)
 
-    # Build Web3 intelligence section (existing logic but streamlined)
+    # Build Web3 intelligence section (streamlined for space)
     web3_signals = []
     risk_signals = []
     
@@ -594,25 +607,8 @@ def format_enhanced_alert_message(alert: dict) -> str:
                 web3_signals.append("💧 Has Liquidity")
         else:
             risk_signals.append("🚨 No Liquidity Detected")
-        
-        # Advanced signals
-        if ai_data.get('smart_money_buying') or ai_data.get('has_smart_money'):
-            web3_signals.append("🧠 Smart Money Active")
-        
-        if ai_data.get('whale_coordination_detected'):
-            web3_signals.append("🐋 Whale Coordination")
-        
-        if ai_data.get('pump_signals_detected'):
-            web3_signals.append("🚀 Pump Signals")
-        
-        # Risk assessment
-        honeypot_risk = ai_data.get('honeypot_risk', 0)
-        if honeypot_risk > 0.7:
-            risk_signals.append(f"🍯 HIGH Honeypot Risk ({honeypot_risk:.0%})")
-        elif honeypot_risk > 0.4:
-            risk_signals.append(f"⚠️ Medium Risk ({honeypot_risk:.0%})")
 
-    # Build the complete message with PROMINENT age and holder info
+    # ENHANCED: Build the complete message with PROMINENT age and holder info
     message_parts = [
         f"{emoji} **{alert_title}**",
         "",
@@ -622,9 +618,12 @@ def format_enhanced_alert_message(alert: dict) -> str:
         f"💰 **ETH Volume:** {eth_value:.4f}",
         f"👥 **Wallets:** {wallet_count}",
         f"🔄 **Transactions:** {tx_count}",
-        # PROMINENT PLACEMENT: Age and holder count right in main metrics
-        age_display,
-        holder_display,
+        "",
+        # PROMINENT PLACEMENT: Age and holder count right after main metrics
+        "🔍 **TOKEN FUNDAMENTALS:**",
+        f"  {age_display}",
+        f"  {holder_display}",
+        "",
         f"🎯 **Confidence:** {confidence}"
     ]
 
@@ -632,15 +631,15 @@ def format_enhanced_alert_message(alert: dict) -> str:
     if risk_indicator:
         message_parts.extend(["", risk_indicator])
 
-    # Add Web3 intelligence section (condensed)
+    # Add condensed Web3 intelligence section
     if web3_signals or risk_signals:
         message_parts.extend(["", "🔍 **Web3 Intelligence:**"])
         
         # Show most important signals first (limit to prevent overflow)
-        for signal in web3_signals[:3]:
+        for signal in web3_signals[:2]:  # Limit to 2 to save space
             message_parts.append(f"  {signal}")
         
-        for risk in risk_signals[:2]:
+        for risk in risk_signals[:1]:  # Limit to 1 risk signal
             message_parts.append(f"  {risk}")
 
     # Contract address section
@@ -665,7 +664,7 @@ def format_enhanced_alert_message(alert: dict) -> str:
     ])
     
     return "\n".join(message_parts)
-
+ 
 def format_alert_message(alert: dict) -> str:
     """Enhanced format alert for Telegram with contract address and links"""
     return format_enhanced_alert_message(alert)

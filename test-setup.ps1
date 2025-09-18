@@ -1,57 +1,47 @@
-﻿# Windows PowerShell test script
-
-Write-Host " Testing Crypto Monitor Setup" -ForegroundColor Cyan
-
-# Test 1: Environment validation
-Write-Host "1 Testing environment configuration..." -ForegroundColor White
-if (Test-Path ".env.production") {
-    $envContent = Get-Content ".env.production"
-    
-    $telegramBot = $envContent | Where-Object { $_ -match "TELEGRAM_BOT_TOKEN=" }
-    $telegramChat = $envContent | Where-Object { $_ -match "TELEGRAM_CHAT_ID=" }
-    
-    if ($telegramBot -and $telegramChat) {
-        Write-Host "    Telegram configuration found" -ForegroundColor Green
-    } else {
-        Write-Host "    Telegram configuration missing" -ForegroundColor Red
-        exit 1
-    }
-    
-    $mongoUri = $envContent | Where-Object { $_ -match "MONGO_URI=" }
-    $alchemyKey = $envContent | Where-Object { $_ -match "ALCHEMY_API_KEY=" }
-    
-    if ($mongoUri -and $alchemyKey) {
-        Write-Host "    Database and API configuration found" -ForegroundColor Green
-    } else {
-        Write-Host "    Database or API configuration missing" -ForegroundColor Yellow
-    }
-} else {
-    Write-Host "    .env.production file missing" -ForegroundColor Red
-    exit 1
-}
-
-# Test 2: File structure
-Write-Host "2 Testing file structure..." -ForegroundColor White
-$requiredFiles = @(
-    "main.py"
-    "requirements.txt" 
-    "Dockerfile"
-    "deploy.ps1"
-    ".env.production"
-    "services\notifications.py"
-    "core\data\models.py"
+﻿# Fix Test Function Authentication
+param(
+    [string]$ProjectId = "crypto-tracker-cloudrun",
+    [string]$Region = "asia-southeast1"
 )
 
-foreach ($file in $requiredFiles) {
-    if (Test-Path $file) {
-        Write-Host "    $file" -ForegroundColor Green
-    } else {
-        Write-Host "    $file missing" -ForegroundColor Red
-    }
-}
+$TEST_FUNCTION = "crypto-analysis-function-test"
 
-Write-Host "`n Setup test complete!" -ForegroundColor Green
-Write-Host "`n Ready to deploy:" -ForegroundColor Cyan
-Write-Host "   .\deploy.ps1 -ProjectId YOUR_PROJECT_ID" -ForegroundColor White
-Write-Host "`n Your Telegram bot is configured and ready" -ForegroundColor Green
-Write-Host " All required files are present" -ForegroundColor Green
+Write-Host "🔐 FIXING TEST FUNCTION AUTHENTICATION" -ForegroundColor Cyan
+Write-Host "Function: $TEST_FUNCTION" -ForegroundColor White
+Write-Host "Region: $Region" -ForegroundColor White
+
+# Set project
+gcloud config set project $ProjectId
+
+# Add public access to the function
+Write-Host "`n1️⃣ Adding public access..." -ForegroundColor Yellow
+gcloud functions add-iam-policy-binding $TEST_FUNCTION `
+    --region=$Region `
+    --member="allUsers" `
+    --role="roles/cloudfunctions.invoker"
+
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "✅ Public access granted!" -ForegroundColor Green
+    
+    # Get the function URL
+    $testUrl = gcloud functions describe $TEST_FUNCTION --region=$Region --gen2 --format="value(serviceConfig.uri)"
+    
+    Write-Host "`n🌐 Test Function URL: $testUrl" -ForegroundColor Green
+    Write-Host "`n🧪 Test it now:" -ForegroundColor Cyan
+    Write-Host "Invoke-RestMethod -Uri '$testUrl'" -ForegroundColor White
+    
+    # Test it
+    Write-Host "`n⏱️ Testing access..." -ForegroundColor Yellow
+    try {
+        $response = Invoke-RestMethod -Uri $testUrl -TimeoutSec 15
+        Write-Host "✅ SUCCESS! Function is now accessible" -ForegroundColor Green
+        Write-Host "Status: $($response.status)" -ForegroundColor White
+    } catch {
+        Write-Host "❌ Still having issues: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "ℹ️ Wait 1-2 minutes for permissions to propagate" -ForegroundColor Yellow
+    }
+    
+} else {
+    Write-Host "❌ Failed to set permissions" -ForegroundColor Red
+    Write-Host "Try running the deploy script again" -ForegroundColor Yellow
+}

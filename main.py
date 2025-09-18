@@ -425,7 +425,7 @@ async def handle_health_check(headers):
         return (json_dumps(error_response), 500, headers)
 
 async def handle_analysis_request_with_deduplication(request: Request, headers):
-    """Handle POST request for analysis with orjson parsing and duplicate prevention"""
+    """Handle POST request for analysis with test flag support"""
     try:
         # Get JSON data using orjson for 3x faster parsing
         request_json = request.get_json(silent=True)
@@ -436,8 +436,10 @@ async def handle_analysis_request_with_deduplication(request: Request, headers):
                 headers
             )
         
-        # DUPLICATE PREVENTION CHECK
-        if is_duplicate_request(request_json):
+        # DUPLICATE PREVENTION CHECK (skip for test mode)
+        test_mode = request_json.get('test_mode', False)
+        
+        if not test_mode and is_duplicate_request(request_json):
             logger.warning("🚫 Rejecting duplicate request")
             duplicate_response = {
                 "error": "Duplicate request detected",
@@ -447,41 +449,41 @@ async def handle_analysis_request_with_deduplication(request: Request, headers):
                 "duplicate_prevention": True,
                 "retry_after_seconds": 60
             }
-            return (json_dumps(duplicate_response), 429, headers)  # 429 = Too Many Requests
+            return (json_dumps(duplicate_response), 429, headers)
         
-        # Log the unique request
-        request_hash = generate_request_hash(request_json)
-        logger.info(f"🚀 Processing unique request: {request_hash}")
+        # Log the request type
+        if test_mode:
+            logger.info(f"🧪 TEST MODE: Processing test request without database writes")
+        else:
+            # Log the unique request
+            request_hash = generate_request_hash(request_json)
+            logger.info(f"🚀 Processing unique request: {request_hash}")
+        
         logger.info(f"Request: {request_json.get('network')}-{request_json.get('analysis_type')} ({request_json.get('num_wallets', 0)} wallets)")
         
-        # Override user settings with lower thresholds for more notifications
-        if 'min_alpha_score' not in request_json:
-            request_json['min_alpha_score'] = 15.0  # Lowered from 50.0
-        else:
-            # Ensure it's not too high
-            request_json['min_alpha_score'] = min(float(request_json['min_alpha_score']), 25.0)
-        
-        if 'max_tokens' not in request_json:
-            request_json['max_tokens'] = 10  # Increased from 7
-        else:
-            # Ensure we get more tokens
-            request_json['max_tokens'] = max(int(request_json['max_tokens']), 5)
-        
-        logger.info(f"Enhanced settings: min_score={request_json['min_alpha_score']}, max_tokens={request_json['max_tokens']}")
-        
-        # Delegate to analysis handler
+        # Pass test_mode flag to analysis handler
         result = await analysis_handler.handle_analysis_request(request_json)
         status_code = 200 if result.get('success', False) else 500
         
-        # Add deduplication info to response
-        result['duplicate_prevention'] = {
-            'request_hash': request_hash,
-            'processed_at': datetime.utcnow().isoformat(),
-            'duplicate_check_passed': True,
-            'active_requests_tracked': len(_recent_requests)
-        }
-        
-        logger.info(f"✅ Request completed: {request_hash} (status: {status_code})")
+        # Add test mode info to response
+        if test_mode:
+            result['test_mode'] = True
+            result['test_info'] = {
+                'database_writes_disabled': True,
+                'alert_storage_disabled': True,
+                'notification_disabled': True,
+                'intelligence_api_testing': True
+            }
+            logger.info(f"✅ Test request completed successfully")
+        else:
+            # Add deduplication info to response for production
+            result['duplicate_prevention'] = {
+                'request_hash': request_hash,
+                'processed_at': datetime.utcnow().isoformat(),
+                'duplicate_check_passed': True,
+                'active_requests_tracked': len(_recent_requests)
+            }
+            logger.info(f"✅ Request completed: {request_hash} (status: {status_code})")
         
         # Use orjson for 3x faster response serialization
         return (json_dumps(result), status_code, headers)
@@ -497,7 +499,7 @@ async def handle_analysis_request_with_deduplication(request: Request, headers):
             "traceback": traceback.format_exc()
         }
         return (json_dumps(error_response), 500, headers)
-
+    
 # For local testing
 if __name__ == "__main__":
     logger.info("Starting local test with orjson performance boost + duplicate prevention")

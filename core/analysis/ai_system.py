@@ -567,6 +567,7 @@ class AdvancedCryptoAI:
         df['is_smart_wallet'] = df['wallet_score'] > 200
         df['is_new_token'] = df['token_age_hours'] < 168
         
+        # FIXED: Create has_smart_money column safely
         df['has_smart_money'] = df['smart_money_buying'] | df['whale_accumulation']
         
         return df

@@ -829,18 +829,11 @@ class TelegramService:
                 "exception": True
             }
     
-    async def send_analysis_notifications(self, result, network: str, max_tokens: int = 7, min_alpha_score: float = 50.0):
-        """Send notifications with momentum and daily prime time enhancement"""
+    async def send_analysis_notifications(self, result, network: str, max_tokens: int = 7, min_alpha_score: float = 50.0, store_alerts: bool = True):
+        """Send notifications with optional alert storage"""
         try:
-            # Initialize daily prime time system
-            daily_prime_system = DailyPrimeTimeSystem()
-            
             if not result.ranked_tokens:
-                # Check if this would be prime time for context
-                prime_info = daily_prime_system.is_daily_prime_time(result.analysis_type)
                 message = f"📊 **{result.analysis_type.upper()} Analysis Complete** - No tokens found for {network.upper()}"
-                if prime_info['is_prime_time']:
-                    message = f"🕐 **DAILY PRIME TIME** {message}"
                 await self.send_message(message)
                 return
             
@@ -858,7 +851,7 @@ class TelegramService:
                             'confidence': ai_data.get('confidence', 'Unknown'),
                             'ai_data': ai_data,
                             'score': score,
-                            'enhanced_score': score  # Keep original scoring
+                            'enhanced_score': score
                         }
                         qualifying_tokens.append(alert)
             
@@ -866,7 +859,7 @@ class TelegramService:
                 await self._send_no_alerts_message(result, network, min_alpha_score)
                 return
             
-            # Add momentum data for each alert (existing logic)
+            # Add momentum data and store alerts (if enabled)
             for alert in qualifying_tokens:
                 try:
                     # Get momentum data
@@ -877,42 +870,38 @@ class TelegramService:
                         )
                     alert['momentum_data'] = momentum_data
                     
-                    # Store alert for future momentum tracking
-                    if self.momentum_tracker:
+                    # Store alert for future momentum tracking (ONLY if store_alerts=True)
+                    if store_alerts and self.momentum_tracker:
                         success = await self.momentum_tracker.store_alert(alert)
-                        if not success:
-                            logger.warning(f"Failed to store momentum alert for {alert['token']}")
+                        if success:
+                            logger.info(f"✅ Stored alert for momentum tracking: {alert['token']}")
+                        else:
+                            logger.warning(f"⚠️ Failed to store momentum alert for {alert['token']}")
+                    elif not store_alerts:
+                        logger.info(f"📊 Skipping alert storage for {alert['token']} (store_alerts=False)")
                             
                 except Exception as e:
                     logger.error(f"Error processing momentum for {alert['token']}: {e}")
                     alert['momentum_data'] = {}
             
-            # ENHANCE WITH DAILY PRIME TIME (without changing function names)
-            enhanced_alerts = daily_prime_system.enhance_alerts_for_daily_prime_time(qualifying_tokens, result.analysis_type)
-            
-            # Sort by momentum direction (existing logic)
-            enhanced_alerts = self._sort_alerts_by_momentum_direction(enhanced_alerts, result.analysis_type)
+            # Sort by momentum direction
+            enhanced_alerts = self._sort_alerts_by_momentum_direction(qualifying_tokens, result.analysis_type)
             
             # Limit to max tokens
             limited_alerts = enhanced_alerts[:max_tokens]
             
             if limited_alerts:
-                # Send individual notifications with prime time formatting
+                # Send individual notifications (same as before)
                 for alert in limited_alerts:
                     try:
-                        # Use prime time formatting if it's prime time, otherwise use existing formatting
-                        if alert.get('is_daily_prime_time', False):
-                            message = daily_prime_system.format_daily_prime_time_message(alert)
-                        else:
-                            message = self._format_alert_with_momentum(alert)
-                        
+                        message = self._format_alert_with_momentum(alert)
                         await self.send_message(message)
                         await asyncio.sleep(2)  # Rate limiting
                         
                     except Exception as e:
                         logger.error(f"Failed to send alert: {e}")
                 
-                # Send trending summary (existing logic)
+                # Send trending summary (same as before)
                 if self.momentum_tracker:
                     try:
                         await self._send_trending_summary(network, result.analysis_type)
@@ -920,10 +909,11 @@ class TelegramService:
                     except Exception as e:
                         logger.error(f"Failed to send trending summary: {e}")
                 
-                # Send analysis summary with prime time context
-                await self._send_analysis_summary(result, network, len(limited_alerts), min_alpha_score, daily_prime_system)
+                # Send analysis summary with storage info
+                await self._send_analysis_summary(result, network, len(limited_alerts), min_alpha_score, store_alerts)
 
-                logger.info(f"Sent {len(limited_alerts)} notifications for {network}")
+                alerts_stored_msg = f"stored {len(limited_alerts)} alerts, " if store_alerts else "no alert storage, "
+                logger.info(f"Sent {len(limited_alerts)} notifications for {network} - {alerts_stored_msg}momentum tracking {'enabled' if self.momentum_tracker else 'disabled'}")
                 
             else:
                 await self._send_no_alerts_message(result, network, min_alpha_score)
@@ -1194,37 +1184,24 @@ class TelegramService:
             import traceback
             logger.error(f"Trending summary traceback: {traceback.format_exc()}")
       
-    async def _send_analysis_summary(self, result, network: str, alerts_sent: int, min_alpha_score: float, prime_system=None):
-        """Send analysis summary with optional prime time context"""
+    async def _send_analysis_summary(self, result, network: str, alerts_sent: int, min_alpha_score: float, store_alerts: bool = True):
+        """Send analysis summary with storage info"""
         
         network_info = get_network_info(network)
-        
-        # Prime time context (only if prime_system is provided)
-        if prime_system:
-            # Get prime time info
-            prime_info = prime_system.is_daily_prime_time(result.analysis_type)
-            
-            if prime_info['is_prime_time']:
-                prime_context = f"🕐 **DAILY PRIME TIME ANALYSIS**\n🎯 {prime_info['description']}\n⏰ Window: {prime_info.get('window_start', 'N/A')} - {prime_info.get('window_end', 'N/A')}"
-            else:
-                next_prime = prime_info.get('next_prime_time', 'N/A')
-                next_occurrence = prime_info.get('next_occurrence', 'tomorrow')
-                prime_context = f"📊 **Standard Analysis**\n⏰ Next prime time: {next_prime} {next_occurrence}"
-        else:
-            # Fallback for when called without prime_system (backward compatibility)
-            prime_context = f"📊 **{result.analysis_type.upper()} ANALYSIS**"
         
         storage_info = ""
         if hasattr(result, 'performance_metrics'):
             transfers_stored = result.performance_metrics.get('transfers_stored', 0)
             if transfers_stored > 0:
-                storage_info = f"\n🗄️ **Stored:** {transfers_stored} records"
+                storage_info = f"\n🗄️ **Transfer Storage:** {transfers_stored} records"
             else:
-                storage_info = f"\n🗄️ **Storage:** Disabled"
+                storage_info = f"\n🗄️ **Transfer Storage:** Disabled"
+        
+        # Add alert storage info
+        alert_storage_info = "Enabled" if store_alerts else "Disabled"
+        storage_info += f"\n📊 **Alert Storage:** {alert_storage_info}"
         
         summary_message = f"""📊 **{result.analysis_type.upper()} ANALYSIS COMPLETE**
-
-    {prime_context}
 
     ✅ **Alerts Sent:** {alerts_sent}
     📈 **Total Tokens Found:** {result.unique_tokens}
@@ -1232,29 +1209,11 @@ class TelegramService:
     🔍 **Filter:** min score {min_alpha_score}{storage_info}
 
     🌐 **Network:** {network_info['name']} ({network_info['symbol']})
-    🚀 **Features:** Prime time priority, momentum tracking, Web3 intel
+    🚀 **Features:** Enhanced intelligence, momentum tracking, Web3 data
     ⏰ {datetime.now().strftime('%H:%M:%S UTC')}"""
         
         await self.send_message(summary_message.strip())
         
-        async def _send_no_alerts_message(self, result, network: str, min_alpha_score: float):
-            """Send message when no alerts qualify"""
-            network_info = get_network_info(network)
-            max_score = max([t[2] for t in result.ranked_tokens[:3]]) if result.ranked_tokens else 0
-            
-            message = f"""📊 **{result.analysis_type.upper()} ANALYSIS - NO ALERTS**
-
-    🌐 **Network:** {network_info['name']} ({network_info['symbol']})
-    📊 **Tokens Found:** {result.unique_tokens}
-    🚫 **Above {min_alpha_score} Score:** 0
-    📈 **Highest Score:** {max_score:.1f}
-
-    💡 **Tip:** Lower min_alpha_score for more alerts
-    ⏰ {datetime.now().strftime('%H:%M:%S UTC')}
-    🚀 Momentum-Enhanced v3.2"""
-            
-            await self.send_message(message.strip())
-
     async def send_start_notification(self, network: str, analysis_type: str, num_wallets: int, 
                                     days_back: float, use_smart_timing: bool, max_tokens: int, 
                                     min_alpha_score: float, store_data: bool = False):

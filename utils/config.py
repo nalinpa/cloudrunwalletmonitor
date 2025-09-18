@@ -1,5 +1,3 @@
-# utils/config.py - Updated to remove MongoDB dependencies
-
 import os
 from typing import List
 import logging 

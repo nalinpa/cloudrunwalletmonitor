@@ -316,7 +316,7 @@ class CloudSellAnalyzer:
             return self._empty_result()
     
     def _create_enhanced_result(self, analysis_results: Dict, sells: List[Purchase]) -> AnalysisResult:
-        """Create enhanced sell analysis result with AI scoring details - FIXED to generate notifications with token age"""
+        """Create enhanced sell analysis result with AI scoring details - NO HOLDER DATA"""
         logger.info("Creating enhanced AI sell analysis result...")
         
         if not analysis_results:
@@ -339,40 +339,15 @@ class CloudSellAnalyzer:
         contract_lookup = {s.token_bought: s.web3_analysis.get('contract_address', '') 
                         for s in sells if s.web3_analysis}
         
-        # FIXED: Create token age and holder count lookup from sells
+        # Create token age lookup
         token_age_lookup = {}
-        holder_count_lookup = {}
-        
         for sell in sells:
             token = sell.token_bought
-            if sell.web3_analysis:
-                # Extract token age from multiple possible sources
-                age_hours = None
-                holder_count = None
-                
-                # Try different field names where age might be stored
-                for field in ['token_age_hours', 'age_hours', 'contract_age_hours']:
-                    if field in sell.web3_analysis and sell.web3_analysis[field] is not None:
-                        age_hours = sell.web3_analysis[field]
-                        break
-                
-                # Try holder count
-                for field in ['holder_count', 'holders', 'total_holders']:
-                    if field in sell.web3_analysis and sell.web3_analysis[field] is not None:
-                        holder_count = sell.web3_analysis[field]
-                        break
-                
-                if age_hours is not None:
-                    token_age_lookup[token] = float(age_hours)
-                    logger.debug(f"Found token age for {token}: {age_hours:.1f} hours")
-                
-                if holder_count is not None:
-                    holder_count_lookup[token] = int(holder_count)
-                    logger.debug(f"Found holder count for {token}: {holder_count}")
+            if sell.web3_analysis and sell.web3_analysis.get('token_age_hours'):
+                token_age_lookup[token] = sell.web3_analysis['token_age_hours']
         
         logger.info(f"Contract lookup created for {len(contract_lookup)} tokens")
         logger.info(f"Token age data found for {len(token_age_lookup)} tokens")
-        logger.info(f"Holder count data found for {len(holder_count_lookup)} tokens")
         
         if len(scores) > 0:
             logger.info("Processing token sell pressure rankings with contract addresses and Web3 data...")
@@ -389,7 +364,7 @@ class CloudSellAnalyzer:
                         'scores': [],
                         'tokens_sold': 0
                     }
-                sell_stats[token]['total_eth'] += sell.amount_received
+                sell_stats[token]['total_eth'] += sell.amount_received  # ETH received from sells
                 sell_stats[token]['count'] += 1
                 sell_stats[token]['wallets'].add(sell.wallet_address)
                 sell_stats[token]['scores'].append(sell.sophistication_score or 0)
@@ -402,12 +377,11 @@ class CloudSellAnalyzer:
                     'total_eth': 0, 'count': 1, 'wallets': set(['unknown']), 'scores': [0], 'tokens_sold': 0
                 })
                 
-                # Get contract address, token age, and holder count
+                # Get contract address and age
                 contract_address = contract_lookup.get(token, '')
                 token_age_hours = token_age_lookup.get(token)
-                holder_count = holder_count_lookup.get(token)
                 
-                # Enhanced token data with AI sell pressure metrics and Web3 intelligence
+                # Enhanced token data with AI sell pressure metrics
                 token_data = {
                     'total_eth_received': float(sstats['total_eth']),
                     'wallet_count': len(sstats['wallets']),
@@ -425,51 +399,73 @@ class CloudSellAnalyzer:
                     'ai_enhanced': score_data.get('ai_enhanced', False),
                     'confidence': score_data.get('confidence', 0.7),
                     
-                    # FIXED: Include Web3 intelligence in main token data
-                    'token_age_hours': token_age_hours,
-                    'holder_count': holder_count,
-                    'is_verified': score_data.get('is_verified', False),
-                    'has_liquidity': score_data.get('has_liquidity', False),
-                    'liquidity_usd': score_data.get('liquidity_usd', 0),
-                    'honeypot_risk': score_data.get('honeypot_risk', 0.3),
-                    
-                    # Web3 data for notifications (comprehensive)
+                    # Web3 data for notifications
                     'web3_data': {
                         'contract_address': contract_address,
                         'ca': contract_address,
                         'token_symbol': token,
-                        'network': self.network,
-                        'token_age_hours': token_age_hours,
-                        'holder_count': holder_count,
-                        'is_verified': score_data.get('is_verified', False),
-                        'has_liquidity': score_data.get('has_liquidity', False),
-                        'liquidity_usd': score_data.get('liquidity_usd', 0),
-                        'honeypot_risk': score_data.get('honeypot_risk', 0.3),
-                        'smart_money_selling': score_data.get('smart_money_selling', False),
-                        'whale_distribution': score_data.get('whale_distribution', False),
-                        'sell_pressure_active': True
+                        'network': self.network
                     }
                 }
                 
-                # Include all enhanced AI data with Web3 intelligence
-                ai_data_with_web3 = score_data.copy()
-                ai_data_with_web3.update({
-                    'token_age_hours': token_age_hours,
-                    'holder_count': holder_count,
-                    'contract_address': contract_address,
-                    'ca': contract_address,
-                    'sell_pressure_analysis': True
-                })
+                # Add token age if available
+                if token_age_hours is not None:
+                    token_data['token_age_hours'] = float(token_age_hours)
+                    token_data['token_age_days'] = float(token_age_hours / 24)
+                    
+                    # Age classification for sell pressure context
+                    if token_age_hours < 1:
+                        token_data['age_classification'] = 'BRAND_NEW'
+                        token_data['sell_urgency'] = 'CRITICAL'  # New tokens dumping is very concerning
+                    elif token_age_hours < 24:
+                        token_data['age_classification'] = 'FRESH'
+                        token_data['sell_urgency'] = 'HIGH'
+                    elif token_age_hours < 168:  # 1 week
+                        token_data['age_classification'] = 'RECENT'
+                        token_data['sell_urgency'] = 'MEDIUM'
+                    elif token_age_hours < 720:  # 1 month
+                        token_data['age_classification'] = 'ESTABLISHED'
+                        token_data['sell_urgency'] = 'NORMAL'
+                    else:
+                        token_data['age_classification'] = 'MATURE'
+                        token_data['sell_urgency'] = 'NORMAL'
+                    
+                    # Add age data to web3_data
+                    token_data['web3_data']['token_age_hours'] = token_age_hours
+                    token_data['web3_data']['token_age_days'] = token_age_hours / 24
+                    token_data['web3_data']['age_classification'] = token_data['age_classification']
+                    token_data['web3_data']['sell_urgency'] = token_data['sell_urgency']
                 
+                # Calculate sell pressure intensity
+                eth_per_sell = sstats['total_eth'] / sstats['count'] if sstats['count'] > 0 else 0
+                if eth_per_sell > 5.0:
+                    token_data['sell_intensity'] = 'MASSIVE'
+                elif eth_per_sell > 2.0:
+                    token_data['sell_intensity'] = 'LARGE'
+                elif eth_per_sell > 1.0:
+                    token_data['sell_intensity'] = 'MODERATE'
+                elif eth_per_sell > 0.1:
+                    token_data['sell_intensity'] = 'SMALL'
+                else:
+                    token_data['sell_intensity'] = 'MINIMAL'
+                
+                # Include all enhanced data in tuple for notifications
                 # Format: (token_name, token_data, score, ai_data)
+                ai_data_with_web3 = score_data.copy()
+                
+                # Add Web3 intelligence from any sell of this token
+                for sell in sells:
+                    if sell.token_bought == token and sell.web3_analysis:
+                        ai_data_with_web3.update(sell.web3_analysis)
+                        break
+                
                 ranked_tokens.append((token, token_data, score_data['total_score'], ai_data_with_web3))
                 
-                # Enhanced logging with Web3 data
-                age_display = f", {token_age_hours/24:.1f}d old" if token_age_hours else ""
-                holder_display = f", {holder_count:,} holders" if holder_count else ""
+                # Enhanced logging with age and sell pressure info
                 ca_display = contract_address[:10] + '...' if len(contract_address) > 10 else 'No CA'
-                
-                logger.info(f"✅ Added sell pressure token: {token} (Score: {score_data['total_score']:.1f}, CA: {ca_display}{age_display}{holder_display})")
+                age_display = f", {token_age_hours/24:.1f}d old" if token_age_hours else ""
+                intensity_display = f", {token_data['sell_intensity']} sells"
+                logger.info(f"✅ Added sell pressure token: {token} (Score: {score_data['total_score']:.1f}, CA: {ca_display}{age_display}{intensity_display})")
         else:
             logger.warning("❌ Still no scores available for sell pressure ranking")
         
@@ -477,7 +473,7 @@ class CloudSellAnalyzer:
         ranked_tokens.sort(key=lambda x: x[2], reverse=True)
         logger.info(f"🎯 Final ranked sell pressure tokens: {len(ranked_tokens)}")
         
-        # Calculate totals
+        # Calculate totals for sells
         total_eth_received = sum(s.amount_received for s in sells)
         unique_tokens = len(set(s.token_bought for s in sells))
         
@@ -488,14 +484,20 @@ class CloudSellAnalyzer:
         enhanced_stats.update({
             'ai_enhancement_enabled': is_enhanced,
             'data_quality_score': getattr(self.data_processor, '_last_quality_score', 1.0),
-            'processing_stats': self.data_processor.get_processing_stats(),
-            'web3_data_enriched': len(token_age_lookup) + len(holder_count_lookup),
+            'processing_stats': self.data_processor.get_processing_stats() if self.data_processor else {},
             'sell_analysis_metadata': {
                 'avg_eth_per_sell': total_eth_received / len(sells) if sells else 0,
                 'sell_pressure_detected': len(ranked_tokens),
                 'highest_pressure_score': ranked_tokens[0][2] if ranked_tokens else 0,
                 'tokens_with_age_data': len(token_age_lookup),
-                'tokens_with_holder_data': len(holder_count_lookup)
+                'tokens_with_contracts': len(contract_lookup),
+                'sell_intensity_breakdown': {
+                    'massive': len([t for _, t, _, _ in ranked_tokens if t.get('sell_intensity') == 'MASSIVE']),
+                    'large': len([t for _, t, _, _ in ranked_tokens if t.get('sell_intensity') == 'LARGE']),
+                    'moderate': len([t for _, t, _, _ in ranked_tokens if t.get('sell_intensity') == 'MODERATE']),
+                    'small': len([t for _, t, _, _ in ranked_tokens if t.get('sell_intensity') == 'SMALL']),
+                    'minimal': len([t for _, t, _, _ in ranked_tokens if t.get('sell_intensity') == 'MINIMAL'])
+                }
             }
         })
         

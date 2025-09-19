@@ -33,7 +33,6 @@ class AdvancedCryptoAI:
             'pump_threshold': 0.65,
             'anomaly_threshold': 0.3,
             'smart_money_threshold': 200,
-            'min_holder_count': 50,
             'min_liquidity_eth': 5.0
         }
         
@@ -43,7 +42,6 @@ class AdvancedCryptoAI:
             'wallet_quality': 0.20,
             'momentum': 0.15,
             'liquidity': 0.15,
-            'holder_distribution': 0.10,
             'age_factor': 0.08,
             'risk_factor': 0.07
         }
@@ -181,11 +179,12 @@ class AdvancedCryptoAI:
     
 
     async def _analyze_single_token_web3(self, session, token_symbol: str, token_info: Dict) -> Dict:
-        """Check if holder analysis is being called"""
+        """Analyze Web3 intelligence for a single token"""
         try:
             contract_address = token_info['contract_address']
             network = token_info['network']
             
+            # Skip if no valid contract address
             if not contract_address or len(contract_address) != 42:
                 return self._apply_heuristic_intelligence(token_symbol, network, token_info)
             
@@ -202,52 +201,33 @@ class AdvancedCryptoAI:
                 'smart_money_buying': False,
                 'whale_accumulation': False
             }
-            
-            # CHECK: Is holder analysis being called?
-            # This is likely missing in your current code
+
+            # Run intelligence checks concurrently
             tasks = [
                 self._check_contract_verification_ai(session, contract_address, network),
                 self._check_dexscreener_liquidity_ai(session, contract_address),
-                self._check_coingecko_data_ai(session, contract_address, token_symbol),
-                # ADD THIS LINE if it's missing:
-                self._get_holder_data(contract_address, network)
+                self._check_coingecko_data_ai(session, contract_address, token_symbol)
             ]
             
             results = await asyncio.gather(*tasks, return_exceptions=True)
             
-            # Process results with debugging
-            for i, result in enumerate(results):
+            # Process results (now only 3 tasks instead of 4)
+            for result in results:
                 if isinstance(result, dict) and result:
-                    logger.info(f"DEBUG: Task {i} returned: {list(result.keys())}")
                     intelligence.update(result)
-                    source = result.get('source') or result.get('data_source')
-                    if source:
-                        intelligence['data_sources'].append(source)
-                else:
-                    logger.warning(f"DEBUG: Task {i} failed: {result}")
+                    if result.get('source'):
+                        intelligence['data_sources'].append(result['source'])
+            
+            # Apply heuristics if no API data
+            if not intelligence['data_sources']:
+                intelligence = self._apply_heuristic_intelligence(token_symbol, network, token_info)
             
             return intelligence
             
         except Exception as e:
             logger.debug(f"Single token Web3 analysis failed for {token_symbol}: {e}")
             return self._apply_heuristic_intelligence(token_symbol, network, token_info)
-
-    def debug_analyzer_result_creation(self, analysis_results: Dict, purchases: List[Purchase]) -> AnalysisResult:
-        """Debug version to check data extraction"""
-        
-        for purchase in purchases:
-            token = purchase.token_bought
-            if purchase.web3_analysis:
-                logger.info(f"DEBUG: {token} web3_analysis keys: {list(purchase.web3_analysis.keys())}")
-                
-                # Check specifically for holder data
-                holder_count = purchase.web3_analysis.get('holder_count')
-                gini_coefficient = purchase.web3_analysis.get('gini_coefficient')
-                
-                logger.info(f"DEBUG: {token} - holder_count: {holder_count}, gini_coefficient: {gini_coefficient}")
-            else:
-                logger.warning(f"DEBUG: {token} has no web3_analysis")
-        
+            
             
     async def _get_token_age_from_dexscreener(self, session, contract_address: str) -> Dict:
         """Get token age from DexScreener pair creation data"""
@@ -478,291 +458,6 @@ class AdvancedCryptoAI:
             logger.debug(f"Token age calculation failed: {e}")
             return None
 
-    async def _get_holder_data(self, contract_address: str, network: str) -> Dict:
-        """Get holder count using V2 Etherscan API configuration WITH enhanced debugging"""
-        try:
-            logger.info(f"🔍 DEBUGGING: Starting holder data fetch for {contract_address[:10]}... on {network}")
-            
-            if not self._web3_session:
-                self._web3_session = await self._get_web3_session()
-            
-            # Use V2 API configuration from config
-            if not self.config.etherscan_api_key:
-                logger.warning("❌ DEBUGGING: No Etherscan API key - returning empty holder data")
-                return {}
-            
-            # Get chain ID for V2 API
-            chain_id = self.config.chain_ids.get(network.lower())
-            if not chain_id:
-                logger.warning(f"❌ DEBUGGING: No chain ID configured for {network} - returning empty holder data")
-                return {}
-            
-            logger.info(f"🔍 DEBUGGING: Using chain ID {chain_id} for {network}")
-            
-            # ENHANCED: Use V2 endpoint and configuration with more holders for better Gini calculation
-            url = f"{self.config.etherscan_endpoint}?chainid={chain_id}&module=token&action=tokenholderlist&contractaddress={contract_address}&page=1&offset=1000&apikey={self.config.etherscan_api_key}"
-            
-            logger.info(f"🔍 DEBUGGING: API URL: {url[:100]}...") # Don't log full URL with API key
-            
-            # Apply V2 rate limiting
-            await asyncio.sleep(self.config.etherscan_api_rate_limit)
-            
-            logger.debug(f"🔍 V2 API holder check: {contract_address[:10]}... on {network} (chain {chain_id})")
-            
-            async with self._web3_session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as response:
-                logger.info(f"🔍 DEBUGGING: API response status: {response.status}")
-                
-                if response.status == 200:
-                    data = await response.json()
-                    logger.info(f"🔍 DEBUGGING: API response keys: {list(data.keys())}")
-                    logger.info(f"🔍 DEBUGGING: API status: {data.get('status')}")
-                    logger.info(f"🔍 DEBUGGING: API message: {data.get('message', 'No message')}")
-                    
-                    # Handle V2 API errors
-                    if data.get('status') == '0':
-                        error_msg = data.get('message', 'Unknown error')
-                        logger.warning(f"❌ DEBUGGING: V2 API error for {network}: {error_msg}")
-                        
-                        if 'rate limit' in error_msg.lower():
-                            logger.warning("⚠️ V2 API rate limit hit for holder data")
-                        elif 'invalid' in error_msg.lower():
-                            logger.warning("⚠️ V2 API invalid request for holder data")
-                        
-                        return {}
-                    
-                    # Parse successful V2 response
-                    if data.get('status') == '1' and data.get('result'):
-                        holders = data.get('result', [])
-                        holder_count = len(holders)
-                        
-                        logger.info(f"🔍 DEBUGGING: Raw holders count: {holder_count}")
-                        logger.info(f"🔍 DEBUGGING: First holder keys: {list(holders[0].keys()) if holders else 'No holders'}")
-                        
-                        if holder_count > 0:
-                            logger.info(f"✅ V2 {network.upper()} holders: {holder_count:,} ({contract_address[:10]}...)")
-                            
-                            # ENHANCED: Calculate comprehensive holder metrics with debugging
-                            logger.info(f"🔍 DEBUGGING: Calculating basic concentration...")
-                            basic_concentration = self._calculate_concentration(holders)
-                            logger.info(f"🔍 DEBUGGING: Basic concentration: {basic_concentration}")
-                            
-                            logger.info(f"🔍 DEBUGGING: Calculating Gini metrics...")
-                            gini_metrics = self._calculate_comprehensive_gini_metrics(holders)
-                            logger.info(f"🔍 DEBUGGING: Gini metrics keys: {list(gini_metrics.keys())}")
-                            logger.info(f"🔍 DEBUGGING: Gini coefficient: {gini_metrics.get('gini_coefficient')}")
-                            
-                            # Combine all metrics
-                            result = {
-                                'holder_count': holder_count,
-                                'top_holder_percentage': basic_concentration,
-                                'data_source': 'etherscan_v2',
-                                'chain_id': chain_id,
-                                'holders_list': holders,  # Keep for debugging
-                                **gini_metrics  # Add Gini and distribution metrics
-                            }
-                            
-                            logger.info(f"🔍 DEBUGGING: Final result keys: {list(result.keys())}")
-                            
-                            # Enhanced logging
-                            gini = gini_metrics.get('gini_coefficient')
-                            risk = gini_metrics.get('holder_concentration_risk', 'UNKNOWN')
-                            if gini is not None:
-                                logger.info(f"📊 V2 {network.upper()} distribution: {holder_count:,} holders, "
-                                        f"Gini: {gini:.3f}, Risk: {risk}")
-                            
-                            return result
-                        else:
-                            logger.warning(f"❌ DEBUGGING: V2 API returned empty holder list for {contract_address[:10]}...")
-                            return {}
-                    else:
-                        logger.warning(f"❌ DEBUGGING: V2 API no result for holder data: {contract_address[:10]}...")
-                        logger.info(f"🔍 DEBUGGING: Full response: {data}")
-                        return {}
-                
-                else:
-                    logger.warning(f"❌ DEBUGGING: V2 API HTTP {response.status} for holder data on {network}")
-                    response_text = await response.text()
-                    logger.info(f"🔍 DEBUGGING: Response text: {response_text[:200]}...")
-                    return {}
-            
-        except Exception as e:
-            logger.error(f"❌ DEBUGGING: V2 holder data exception: {e}")
-            import traceback
-            logger.error(f"🔍 DEBUGGING: Traceback: {traceback.format_exc()}")
-            return {}
-    
-    def _calculate_comprehensive_gini_metrics(self, holders: List[Dict]) -> Dict:
-        """Calculate comprehensive distribution metrics including Gini coefficient"""
-        try:
-            if not holders or len(holders) < 5:
-                # Use estimation for small datasets
-                return self._estimate_distribution_from_count(len(holders))
-            
-            # Extract balances from V2 API format
-            balances = []
-            for holder in holders:
-                quantity_str = holder.get('TokenHolderQuantity', '0')
-                
-                try:
-                    # Handle hex or decimal values
-                    if quantity_str.startswith('0x'):
-                        quantity = int(quantity_str, 16)
-                    else:
-                        quantity = float(quantity_str)
-                    
-                    if quantity > 0:
-                        balances.append(quantity)
-                        
-                except (ValueError, TypeError):
-                    logger.debug(f"Could not parse holder quantity: {quantity_str}")
-                    continue
-            
-            if len(balances) < 5:
-                return self._estimate_distribution_from_count(len(balances))
-            
-            # Sort balances in descending order for analysis
-            balances.sort(reverse=True)
-            total_supply = sum(balances)
-            
-            # Calculate Gini coefficient using your existing method (fixed)
-            gini = self._calculate_gini_coefficient(balances)
-            
-            # Calculate concentration metrics
-            top_10_count = min(10, len(balances))
-            top_10_percentage = sum(balances[:top_10_count]) / total_supply * 100 if total_supply > 0 else 0
-            
-            # Calculate top holder percentage
-            top_holder_percentage = balances[0] / total_supply * 100 if total_supply > 0 else 0
-            
-            # Assess concentration risk
-            concentration_risk = self._assess_concentration_risk(gini, top_10_percentage, top_holder_percentage, len(balances))
-            
-            return {
-                'gini_coefficient': round(gini, 4),
-                'top_10_holders_percentage': round(top_10_percentage, 2),
-                'top_holder_percentage': round(top_holder_percentage, 2),
-                'holder_concentration_risk': concentration_risk,
-                'distribution_analysis': {
-                    'total_sample_holders': len(balances),
-                    'whale_holders': len([b for b in balances if b / total_supply > 0.05]),  # >5% holders
-                    'retail_holders': len([b for b in balances if b / total_supply < 0.01]),  # <1% holders
-                    'median_holding_percentage': (sorted([b/total_supply for b in balances])[len(balances)//2] * 100) if balances else 0
-                }
-            }
-            
-        except Exception as e:
-            logger.debug(f"Comprehensive metrics calculation failed: {e}")
-            return self._estimate_distribution_from_count(len(holders) if holders else 0)
-
-    def _calculate_gini_coefficient(self, balances: List[float]) -> float:
-        """Fixed Gini coefficient calculation (your method had a static reference issue)"""
-        try:
-            if not balances or len(balances) < 2:
-                return 0.5  # Default moderate inequality
-            
-            # Sort balances in ascending order for Gini calculation
-            sorted_balances = sorted(balances)
-            n = len(sorted_balances)
-            total_sum = sum(sorted_balances)
-            
-            if total_sum == 0:
-                return 0.5
-            
-            # Calculate Gini coefficient using the standard formula
-            cumulative_sum = 0
-            for i, balance in enumerate(sorted_balances):
-                cumulative_sum += balance * (2 * (i + 1) - n - 1)
-            
-            gini = cumulative_sum / (n * total_sum)
-            
-            # Ensure Gini is between 0 and 1
-            return max(0.0, min(1.0, abs(gini)))
-            
-        except Exception as e:
-            logger.debug(f"Gini calculation failed: {e}")
-            return 0.5
-
-    def _estimate_distribution_from_count(self, holder_count: int) -> Dict:
-        """Estimate distribution metrics when we only have holder count"""
-        if holder_count < 50:
-            estimated_gini = 0.8  # High concentration
-            concentration_risk = 'VERY_HIGH'
-            top_10_percentage = 85.0
-        elif holder_count < 200:
-            estimated_gini = 0.7  # Moderate-high concentration
-            concentration_risk = 'HIGH'
-            top_10_percentage = 75.0
-        elif holder_count < 1000:
-            estimated_gini = 0.6  # Moderate concentration
-            concentration_risk = 'MEDIUM'
-            top_10_percentage = 60.0
-        elif holder_count < 5000:
-            estimated_gini = 0.5  # Lower concentration
-            concentration_risk = 'LOW'
-            top_10_percentage = 45.0
-        else:
-            estimated_gini = 0.4  # Good distribution
-            concentration_risk = 'VERY_LOW'
-            top_10_percentage = 35.0
-        
-        return {
-            'gini_coefficient': estimated_gini,
-            'top_10_holders_percentage': top_10_percentage,
-            'top_holder_percentage': top_10_percentage / 5,  # Estimate top holder
-            'holder_concentration_risk': concentration_risk,
-            'estimated_data': True,
-            'distribution_analysis': {
-                'estimation_based': True,
-                'confidence': 'low' if holder_count < 100 else 'medium'
-            }
-        }
-
-    def _assess_concentration_risk(self, gini: float, top_10_pct: float, top_holder_pct: float, holder_count: int) -> str:
-        """Assess overall concentration risk based on multiple factors"""
-        risk_factors = 0
-        
-        # Gini coefficient risk
-        if gini > 0.8:
-            risk_factors += 3
-        elif gini > 0.6:
-            risk_factors += 2
-        elif gini > 0.4:
-            risk_factors += 1
-        
-        # Top 10 holders concentration risk
-        if top_10_pct > 80:
-            risk_factors += 3
-        elif top_10_pct > 60:
-            risk_factors += 2
-        elif top_10_pct > 40:
-            risk_factors += 1
-        
-        # Top holder concentration risk
-        if top_holder_pct > 20:
-            risk_factors += 2
-        elif top_holder_pct > 10:
-            risk_factors += 1
-        
-        # Holder count risk
-        if holder_count < 50:
-            risk_factors += 3
-        elif holder_count < 200:
-            risk_factors += 2
-        elif holder_count < 1000:
-            risk_factors += 1
-        
-        # Map risk factors to categories
-        if risk_factors >= 8:
-            return 'VERY_HIGH'
-        elif risk_factors >= 6:
-            return 'HIGH'
-        elif risk_factors >= 4:
-            return 'MEDIUM'
-        elif risk_factors >= 2:
-            return 'LOW'
-        else:
-            return 'VERY_LOW'
-    
     async def _check_dexscreener_liquidity_ai(self, session, contract_address: str) -> Dict:
         """Check DexScreener liquidity - optimized for AI analysis"""
         try:
@@ -905,16 +600,8 @@ class AdvancedCryptoAI:
             if token in web3_intelligence:
                 intelligence = web3_intelligence[token]
                 
-                logger.info(f"🔍 DEBUGGING: Applying intelligence to {token}")
-                logger.info(f"🔍 DEBUGGING: Intelligence keys: {list(intelligence.keys())}")
-                
                 # Log comprehensive data when found with debugging
                 token_age = intelligence.get('token_age_hours')
-                holder_count = intelligence.get('holder_count')
-                gini = intelligence.get('gini_coefficient')
-                concentration_risk = intelligence.get('holder_concentration_risk')
-                
-                logger.info(f"🔍 DEBUGGING: Token {token} - Age: {token_age}, Holders: {holder_count}, Gini: {gini}, Risk: {concentration_risk}")
                 
                 # Enhanced logging
                 if token_age is not None:
@@ -923,56 +610,18 @@ class AdvancedCryptoAI:
                                 "RECENT" if age_days < 30 else "ESTABLISHED" if age_days < 365 else "MATURE")
                     logger.info(f"Token age data available for {token}: {token_age:.1f} hours ({age_days:.1f}d) - {age_category}")
                 
-                if holder_count is not None:
-                    logger.info(f"Holder count data available for {token}: {holder_count:,} holders")
-                
-                if gini is not None:
-                    gini_category = ("VERY CONCENTRATED" if gini > 0.8 else "CONCENTRATED" if gini > 0.6 else
-                                "MODERATE" if gini > 0.4 else "DISTRIBUTED" if gini > 0.2 else "WELL DISTRIBUTED")
-                    logger.info(f"Distribution analysis for {token}: Gini {gini:.3f} ({gini_category})")
-                
-                if concentration_risk and concentration_risk != 'UNKNOWN':
-                    logger.info(f"Concentration risk for {token}: {concentration_risk}")
-                
                 # Update purchase web3_analysis with comprehensive intelligence
                 if purchase.web3_analysis:
                     existing_data = purchase.web3_analysis.copy()
-                    logger.info(f"🔍 DEBUGGING: Existing web3_analysis keys: {list(existing_data.keys())}")
                     existing_data.update(intelligence)
                     purchase.web3_analysis = existing_data
                 else:
                     purchase.web3_analysis = intelligence.copy()
-                    
-                logger.info(f"🔍 DEBUGGING: Final web3_analysis keys: {list(purchase.web3_analysis.keys())}")
-                    
-                # Ensure critical fields are properly stored with correct types
-                for field, field_type in [
-                    ('token_age_hours', float),
-                    ('holder_count', int),
-                    ('gini_coefficient', float),
-                    ('top_10_holders_percentage', float),
-                    ('top_holder_percentage', float),
-                    ('is_verified', bool),
-                    ('has_liquidity', bool),
-                    ('liquidity_usd', float),
-                    ('honeypot_risk', float)
-                ]:
-                    if field in intelligence and intelligence[field] is not None:
-                        try:
-                            purchase.web3_analysis[field] = field_type(intelligence[field])
-                            if field in ['token_age_hours', 'holder_count', 'gini_coefficient']:
-                                logger.info(f"✅ DEBUGGING: {field} stored for {token}: {intelligence[field]}")
-                        except (ValueError, TypeError) as e:
-                            logger.error(f"❌ DEBUGGING: Error converting {field} for {token}: {e}")
                 
-                # Store string fields safely
-                if 'holder_concentration_risk' in intelligence:
-                    purchase.web3_analysis['holder_concentration_risk'] = str(intelligence['holder_concentration_risk'])
-                    logger.info(f"✅ DEBUGGING: holder_concentration_risk stored for {token}: {intelligence['holder_concentration_risk']}")
-                
-                logger.info(f"🔍 Comprehensive Web3 intelligence applied to {token}: {len(purchase.web3_analysis)} fields")
-            else:
-                logger.warning(f"❌ DEBUGGING: No Web3 intelligence found for token {token}")
+                # Log what we applied
+                age = purchase.web3_analysis.get('token_age_hours')
+                if age is not None:
+                    logger.debug(f"Applied token age to {token}: {age:.1f} hours")
 
            
     async def _run_enhanced_ai_analysis(self, purchases: List, analysis_type: str) -> Dict:
@@ -1021,12 +670,7 @@ class AdvancedCryptoAI:
                 token_age_hours = web3_data.get('token_age_hours', 999999)  # Default to old token
                 if token_age_hours is None:
                     token_age_hours = 999999
-                
-                # FIXED: Safe holder count extraction
-                holder_count = web3_data.get('holder_count', 0)
-                if holder_count is None:
-                    holder_count = 0
-                
+                    
                 # FIXED: Safe smart money extraction with proper defaults
                 smart_money_buying = web3_data.get('smart_money_buying', False)
                 whale_accumulation = web3_data.get('whale_accumulation', False)
@@ -1053,8 +697,7 @@ class AdvancedCryptoAI:
                     'whale_accumulation': bool(whale_accumulation),
                     'has_coingecko_listing': bool(web3_data.get('has_coingecko_listing', False)),
                     'data_sources_count': len(web3_data.get('data_sources', [])),                    
-                    'token_age_hours': float(token_age_hours),
-                    'holder_count': int(holder_count)
+                    'token_age_hours': float(token_age_hours)
                 }
                 
                 data.append(row)
@@ -1125,7 +768,6 @@ class AdvancedCryptoAI:
                     
                     # Web3 data with SAFE defaults
                     'token_age_hours': float(web3_data.get('token_age_hours', 999999)),
-                    'holder_count': int(web3_data.get('holder_count', 0)),
                     'is_verified': bool(web3_data.get('is_verified', False)),
                     'honeypot_risk': float(web3_data.get('honeypot_risk', 0.3)),
                     'smart_money_buying': bool(web3_data.get('smart_money_buying', False)),
@@ -1250,8 +892,8 @@ class AdvancedCryptoAI:
         return enhanced_scores
     
     async def _get_web3_session(self):
-        """Get HTTP session for Web3 API calls"""
-        if not self._web3_session:
+        """Get HTTP session for Web3 API calls - FIXED for event loop issues"""
+        if not self._web3_session or self._web3_session.closed:
             timeout = aiohttp.ClientTimeout(total=15, connect=5)
             headers = {
                 'User-Agent': 'CryptoAnalysis-AI/1.0',
@@ -1263,7 +905,7 @@ class AdvancedCryptoAI:
                 connector=aiohttp.TCPConnector(limit=8)
             )
         return self._web3_session
-    
+
     def _default_web3_intelligence(self, token_symbol: str, network: str) -> Dict:
         """Default Web3 intelligence when everything fails"""
         return {
@@ -1344,7 +986,6 @@ class AdvancedCryptoAI:
                     
                     # Web3 data (with defaults)
                     'token_age_hours': web3_data.get('token_age_hours', 999999),
-                    'holder_count': web3_data.get('holder_count', 0),
                     'is_verified': web3_data.get('is_verified', False),
                     'honeypot_risk': web3_data.get('honeypot_risk', 0),
                     'smart_money_buying': web3_data.get('smart_money_buying', False),

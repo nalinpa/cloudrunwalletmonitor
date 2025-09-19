@@ -92,25 +92,6 @@ def debug_age_keys(ai_data: dict, data: dict):
     else:
         logger.warning("❌ No age-related keys found in alert data")
 
-def extract_holder_count(ai_data: dict, data: dict) -> int:
-    """Extract holder count from AI data or data sources"""
-    # Try multiple sources for holder count
-    holder_count = None
-    
-    # Try AI data first
-    if ai_data:
-        holder_count = ai_data.get('holder_count')
-    
-    # Try web3_data
-    if holder_count is None and data.get('web3_data'):
-        holder_count = data['web3_data'].get('holder_count')
-    
-    # Try direct from data
-    if holder_count is None:
-        holder_count = data.get('holder_count')
-    
-    return holder_count
-
 def format_token_age_display(token_age_hours) -> str:
     """Format token age with risk indicators and fallback options"""
     if token_age_hours is None:
@@ -146,35 +127,9 @@ def format_token_age_display(token_age_hours) -> str:
     except (ValueError, TypeError):
         return "❓ **Invalid Age Data** (Cannot parse age information)"
 
-def format_holder_count_display(holder_count) -> str:
-    """Format holder count with risk indicators"""
-    if holder_count is None:
-        return "❓ Unknown Holders"
-    
-    try:
-        count = int(holder_count)
-        
-        if count < 10:
-            return f"🚨 **{count} holders** (EXTREME RISK)"
-        elif count < 50:
-            return f"⚠️ **{count} holders** (HIGH RISK)"
-        elif count < 100:
-            return f"⚠️ **{count} holders** (MEDIUM RISK)"
-        elif count < 500:
-            return f"✅ **{count:,} holders** (GOOD)"
-        elif count < 2000:
-            return f"💚 **{count:,} holders** (STRONG)"
-        elif count < 10000:
-            return f"💎 **{count:,} holders** (EXCELLENT)"
-        else:
-            return f"🌟 **{count:,} holders** (MASSIVE)"
-            
-    except (ValueError, TypeError):
-        return "❓ Invalid Holder Data"
-
-def get_combined_risk_indicator(token_age_hours, holder_count) -> str:
+def get_combined_risk_indicator(token_age_hours) -> str:
     """Generate combined risk assessment"""
-    if token_age_hours is None and holder_count is None:
+    if token_age_hours is None:
         return None
     
     risk_factors = []
@@ -193,35 +148,12 @@ def get_combined_risk_indicator(token_age_hours, holder_count) -> str:
         except (ValueError, TypeError):
             pass
     
-    # Holder-based risk
-    if holder_count is not None:
-        try:
-            count = int(holder_count)
-            if count < 50:
-                risk_factors.append("FEW HOLDERS")
-                if risk_level in ["LOW", "MEDIUM"]:
-                    risk_level = "HIGH"
-            elif count < 10:
-                risk_factors.append("VERY FEW HOLDERS")
-                risk_level = "EXTREME"
-        except (ValueError, TypeError):
-            pass
-    
+
     # Generate warning message
     if len(risk_factors) >= 2:
         return f"🚨 **{risk_level} RISK:** {' + '.join(risk_factors)}"
     elif len(risk_factors) == 1:
         return f"⚠️ **{risk_level} RISK:** {risk_factors[0]}"
-    elif token_age_hours is not None and holder_count is not None:
-        try:
-            hours = float(token_age_hours)
-            count = int(holder_count)
-            if hours > 720 and count > 1000:  # 1 month + 1000 holders
-                return "✅ **LOW RISK:** Established token with wide distribution"
-            elif hours > 168 and count > 200:  # 1 week + 200 holders
-                return "💡 **MODERATE RISK:** Growing established project"
-        except (ValueError, TypeError):
-            pass
     
     return None
 
@@ -313,15 +245,6 @@ def get_network_info(network: str) -> Dict[str, str]:
             'dexscreener_base': 'https://dexscreener.com/base/',
             'chain_id': '8453',
             'emoji': '🔵'
-        },
-        'arbitrum': {
-            'name': 'Arbitrum',
-            'symbol': 'ETH',
-            'explorer': 'arbiscan.io',
-            'uniswap_base': 'https://app.uniswap.org/#/swap?chain=arbitrum&outputCurrency=',
-            'dexscreener_base': 'https://dexscreener.com/arbitrum/',
-            'chain_id': '42161',
-            'emoji': '🔺'
         }
     }
     return network_configs.get(network.lower(), network_configs['ethereum'])
@@ -340,9 +263,7 @@ def format_contract_address(contract_address: str) -> str:
     if len(clean_address) != 42:
         return "❓ Invalid contract address"
     
-    # Format for display
-    short_ca = f"{clean_address[:6]}...{clean_address[-4:]}"
-    return f"`{clean_address}`\n💾 Short: `{short_ca}`"
+    return f"`{clean_address}"
 
 def generate_action_links(token: str, contract_address: str, network: str) -> str:
     """Generate action links - SINGLE DEFINITION"""
@@ -392,7 +313,7 @@ def format_alert_message(alert: dict) -> str:
         return format_basic_alert_message(alert)
 
 def format_enhanced_alert_message(alert: dict) -> str:
-    """Format enhanced alert with Web3 intelligence, token age, holder count and Gini coefficient"""
+    """Format enhanced alert with Web3 intelligence, token age"""
     data = alert.get('data', {})
     alert_type = alert.get('alert_type', 'unknown')
     token = alert.get('token', 'UNKNOWN')
@@ -431,26 +352,11 @@ def format_enhanced_alert_message(alert: dict) -> str:
 
     # Extract comprehensive Web3 data for prominence
     token_age_hours = None
-    holder_count = None
-    gini_coefficient = None
-    concentration_risk = None
-    top_10_holders_pct = None
-    top_holder_pct = None
     
     # Try multiple sources for comprehensive data
     for source in [ai_data, web3_data, data]:
         if token_age_hours is None:
             token_age_hours = source.get('token_age_hours')
-        if holder_count is None:
-            holder_count = source.get('holder_count')
-        if gini_coefficient is None:
-            gini_coefficient = source.get('gini_coefficient')
-        if concentration_risk is None:
-            concentration_risk = source.get('holder_concentration_risk')
-        if top_10_holders_pct is None:
-            top_10_holders_pct = source.get('top_10_holders_percentage')
-        if top_holder_pct is None:
-            top_holder_pct = source.get('top_holder_percentage')
 
     # Enhanced formatting functions
     def format_token_age(hours):
@@ -471,62 +377,16 @@ def format_enhanced_alert_message(alert: dict) -> str:
             days = hours / 24
             return f"🕐 Age: 💎 {days:.0f}d (MATURE)"
 
-    def format_holder_count(count):
-        if count is None:
-            return "👥 Holders: Unknown"
-        
-        if count < 50:
-            return f"👥 Holders: 🚨 {count:,} (VERY RISKY)"
-        elif count < 200:
-            return f"👥 Holders: ⚠️ {count:,} (RISKY)"
-        elif count < 1000:
-            return f"👥 Holders: ✅ {count:,} (GOOD)"
-        elif count < 5000:
-            return f"👥 Holders: 💚 {count:,} (STRONG)"
-        else:
-            return f"👥 Holders: 💎 {count:,} (EXCELLENT)"
-
-    def format_gini_coefficient(gini, risk, top_10_pct):
-        if gini is None:
-            return "📊 Distribution: Unknown"
-        
-        # Format Gini with interpretation
-        if gini >= 0.8:
-            interpretation = "🚨 VERY CONCENTRATED"
-        elif gini >= 0.6:
-            interpretation = "⚠️ CONCENTRATED"
-        elif gini >= 0.4:
-            interpretation = "📊 MODERATE"
-        elif gini >= 0.2:
-            interpretation = "✅ DISTRIBUTED"
-        else:
-            interpretation = "💎 WELL DISTRIBUTED"
-        
-        # Add top 10 info if available
-        top_10_info = f" (Top 10: {top_10_pct:.1f}%)" if top_10_pct else ""
-        risk_display = f" [{risk}]" if risk and risk != 'UNKNOWN' else ""
-        
-        return f"📊 Gini: {gini:.3f} {interpretation}{top_10_info}{risk_display}"
 
     # Create displays
     age_display = format_token_age(token_age_hours)
-    holder_display = format_holder_count(holder_count)
-    gini_display = format_gini_coefficient(gini_coefficient, concentration_risk, top_10_holders_pct)
     
     # Generate combined risk assessment
-    def get_combined_risk_indicator(age_hours, holders, gini, concentration_risk, top_holder_pct):
+    def get_combined_risk_indicator(age_hours):
         risk_signals = []
         
         if age_hours is not None and age_hours < 24:
             risk_signals.append("NEW TOKEN")
-        if holders is not None and holders < 50:
-            risk_signals.append("FEW HOLDERS")
-        if gini is not None and gini > 0.7:
-            risk_signals.append("HIGH GINI")
-        if concentration_risk in ['VERY_HIGH', 'HIGH']:
-            risk_signals.append("CONCENTRATED")
-        if top_holder_pct is not None and top_holder_pct > 20:
-            risk_signals.append("WHALE DOMINATED")
             
         if len(risk_signals) >= 3:
             return "🚨 EXTREME RISK: " + " + ".join(risk_signals[:2]) + f" + {len(risk_signals)-2} more"
@@ -534,15 +394,15 @@ def format_enhanced_alert_message(alert: dict) -> str:
             return "🚨 HIGH RISK: " + " + ".join(risk_signals)
         elif len(risk_signals) == 1:
             return "⚠️ CAUTION: " + risk_signals[0]
-        elif all(x is not None for x in [age_hours, holders, gini]):
-            if age_hours > 720 and holders > 1000 and gini < 0.5:
-                return "✅ LOW RISK: Mature + Wide distribution + Fair wealth spread"
-            elif age_hours > 168 and holders > 200 and gini < 0.6:
-                return "💡 MODERATE RISK: Growing project with decent distribution"
-        
+        elif all(x is not None for x in [age_hours]):
+            if age_hours > 720:
+                return "✅ LOW RISK: Mature"
+            elif age_hours > 168:
+                return "💡 MODERATE RISK: Growing project"
+
         return None
 
-    risk_indicator = get_combined_risk_indicator(token_age_hours, holder_count, gini_coefficient, concentration_risk, top_holder_pct)
+    risk_indicator = get_combined_risk_indicator(token_age_hours)
 
     # Build Web3 intelligence section
     web3_signals = []
@@ -596,11 +456,9 @@ def format_enhanced_alert_message(alert: dict) -> str:
         f"👥 **Wallets:** {wallet_count}",
         f"🔄 **Transactions:** {tx_count}",
         "",
-        # PROMINENT PLACEMENT: Age, holder count, and distribution analysis
+        # PROMINENT PLACEMENT: Age
         "🔍 **Distribution Analysis:**",
         f"  {age_display}",
-        f"  {holder_display}",
-        f"  {gini_display}",
         "",
         f"🎯 **Confidence:** {confidence}"
     ]
@@ -636,14 +494,6 @@ def format_enhanced_alert_message(alert: dict) -> str:
     
     # Enhanced footer with distribution stats
     footer_stats = []
-    if holder_count:
-        footer_stats.append(f"👥{holder_count:,}")
-    if gini_coefficient:
-        footer_stats.append(f"📊{gini_coefficient:.3f}")
-    if token_age_hours:
-        footer_stats.append(f"🕐{token_age_hours/24:.1f}d")
-    if concentration_risk and concentration_risk != 'UNKNOWN':
-        footer_stats.append(f"⚠️{concentration_risk}")
     
     stats_display = " | ".join(footer_stats) if footer_stats else ""
     

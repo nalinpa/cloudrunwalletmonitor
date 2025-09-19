@@ -205,36 +205,113 @@ class EnhancedAlphaCalculator:
             return None
     
     async def _get_holder_data(self, contract_address: str, network: str) -> Dict:
-        """Get holder count and distribution data"""
+        """Get holder count using V2 Etherscan API configuration"""
         try:
             if not self.session:
                 return {}
             
-            # Try multiple APIs for holder data
-            apis_to_try = [
-                f"https://api.etherscan.io/api?module=token&action=tokenholderlist&contractaddress={contract_address}&page=1&offset=100",
-                # Add more APIs as needed
-            ]
+            # Use V2 API configuration from config
+            if not self.config.etherscan_api_key:
+                logger.debug("No Etherscan API key - returning empty holder data")
+                return {}
             
-            for api_url in apis_to_try:
-                try:
-                    async with self.session.get(api_url) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            if data.get('status') == '1':
-                                holders = data.get('result', [])
-                                return {
-                                    'holder_count': len(holders),
-                                    'top_holder_percentage': self._calculate_concentration(holders)
-                                }
-                except:
-                    continue
+            # Get chain ID for V2 API
+            chain_id = self.config.chain_ids.get(network.lower())
+            if not chain_id:
+                logger.debug(f"No chain ID configured for {network} - returning empty holder data")
+                return {}
             
-            return {}
+            # FIXED: Use V2 endpoint and configuration
+            url = f"{self.config.etherscan_endpoint}?chainid={chain_id}&module=token&action=tokenholderlist&contractaddress={contract_address}&page=1&offset=1000&apikey={self.config.etherscan_api_key}"
+            
+            # Apply V2 rate limiting
+            await asyncio.sleep(self.config.etherscan_api_rate_limit)
+            
+            logger.debug(f"🔍 V2 API holder check: {contract_address[:10]}... on {network} (chain {chain_id})")
+            
+            async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    
+                    # Handle V2 API errors
+                    if data.get('status') == '0':
+                        error_msg = data.get('message', 'Unknown error')
+                        logger.debug(f"V2 API error for {network}: {error_msg}")
+                        
+                        if 'rate limit' in error_msg.lower():
+                            logger.warning("⚠️ V2 API rate limit hit for holder data")
+                        elif 'invalid' in error_msg.lower():
+                            logger.warning("⚠️ V2 API invalid request for holder data")
+                        
+                        return {}
+                    
+                    # Parse successful V2 response
+                    if data.get('status') == '1' and data.get('result'):
+                        holders = data.get('result', [])
+                        holder_count = len(holders)
+                        
+                        if holder_count > 0:
+                            logger.info(f"✅ V2 {network.upper()} holders: {holder_count:,} ({contract_address[:10]}...)")
+                            
+                            return {
+                                'holder_count': holder_count,
+                                'top_holder_percentage': self._calculate_concentration(holders),
+                                'data_source': 'etherscan_v2',
+                                'chain_id': chain_id
+                            }
+                        else:
+                            logger.debug(f"V2 API returned empty holder list for {contract_address[:10]}...")
+                            return {}
+                    else:
+                        logger.debug(f"V2 API no result for holder data: {contract_address[:10]}...")
+                        return {}
+                
+                else:
+                    logger.debug(f"V2 API HTTP {response.status} for holder data on {network}")
+                    return {}
             
         except Exception as e:
-            logger.debug(f"Error getting holder data: {e}")
+            logger.debug(f"V2 holder data exception: {e}")
             return {}
+
+    def _calculate_concentration(self, holders: List) -> float:
+        """Calculate holder concentration from V2 API response"""
+        if not holders or len(holders) < 2:
+            return 1.0
+        
+        try:
+            # V2 API response format
+            total_supply = 0
+            max_holding = 0
+            
+            for holder in holders:
+                # V2 API typically uses 'TokenHolderQuantity' field
+                quantity_str = holder.get('TokenHolderQuantity', '0')
+                
+                try:
+                    # Handle hex or decimal values
+                    if quantity_str.startswith('0x'):
+                        quantity = int(quantity_str, 16)
+                    else:
+                        quantity = float(quantity_str)
+                    
+                    total_supply += quantity
+                    max_holding = max(max_holding, quantity)
+                    
+                except (ValueError, TypeError):
+                    logger.debug(f"Could not parse holder quantity: {quantity_str}")
+                    continue
+            
+            if total_supply > 0 and max_holding > 0:
+                concentration = max_holding / total_supply
+                logger.debug(f"V2 holder concentration: {concentration:.1%} (top holder)")
+                return concentration
+            
+            return 0.5  # Default if calculation fails
+            
+        except Exception as e:
+            logger.debug(f"Error calculating V2 holder concentration: {e}")
+            return 0.5
     
     async def _get_liquidity_data(self, contract_address: str, network: str) -> Optional[float]:
         """Get liquidity data from DEX APIs"""

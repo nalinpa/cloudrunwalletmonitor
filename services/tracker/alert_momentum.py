@@ -121,15 +121,62 @@ class AlertMomentumTracker:
             return False
     
     def _sync_store_alert(self, alert_data: Dict) -> bool:
-        """Store alert with basic momentum scoring (compatible with existing schema)"""
+        """Store alert with basic momentum scoring"""
         try:
             data = alert_data.get('data', {})
             ai_data = alert_data.get('ai_data', {})
             
             alert_id = f"{alert_data['token']}_{alert_data['network']}_{alert_data['alert_type']}_{int(datetime.now().timestamp())}"
             
-            # Extract main score and convert numpy types to Python types
-            main_score = float(data.get('alpha_score', data.get('sell_pressure_score', data.get('total_score', 0))))
+            # FIXED: Safe type conversion functions
+            def safe_float(value, default=0.0):
+                """Safely convert to float, handling numpy types"""
+                try:
+                    if hasattr(value, 'item'):  # numpy scalar
+                        return float(value.item())
+                    elif value is None:
+                        return default
+                    else:
+                        return float(value)
+                except (ValueError, TypeError, AttributeError):
+                    return default
+            
+            def safe_int(value, default=0):
+                """Safely convert to int, handling numpy types"""
+                try:
+                    if hasattr(value, 'item'):  # numpy scalar
+                        return int(value.item())
+                    elif value is None:
+                        return default
+                    else:
+                        return int(value)
+                except (ValueError, TypeError, AttributeError):
+                    return default
+            
+            def safe_bool(value, default=False):
+                """Safely convert to bool, handling numpy types"""
+                try:
+                    if hasattr(value, 'item'):  # numpy bool
+                        return bool(value.item())
+                    elif value is None:
+                        return default
+                    else:
+                        return bool(value)
+                except (ValueError, TypeError, AttributeError):
+                    return default
+            
+            def safe_str(value, default=""):
+                """Safely convert to string"""
+                try:
+                    if value is None:
+                        return default
+                    else:
+                        return str(value)
+                except:
+                    return default
+            
+            # Extract and safely convert main score
+            main_score = safe_float(data.get('alpha_score', data.get('sell_pressure_score', data.get('total_score', 0))))
             
             # Calculate simple momentum score
             if alert_data['alert_type'] == 'buy':
@@ -137,37 +184,27 @@ class AlertMomentumTracker:
             else:  # sell
                 momentum_score = main_score * -0.8  # Negative for sells
             
-            # Convert all values to basic Python types to avoid JSON serialization issues
-            eth_volume = float(data.get('total_eth_spent', data.get('total_eth_received', data.get('total_eth_value', 0))))
-            wallet_count = int(data.get('wallet_count', 0))
+            # FIXED: Convert all values with safe conversion
+            eth_volume = safe_float(data.get('total_eth_spent', data.get('total_eth_received', data.get('total_eth_value', 0))))
+            wallet_count = safe_int(data.get('wallet_count', 0))
+            confidence_value = safe_float(ai_data.get('confidence')) if ai_data.get('confidence') is not None else None
             
-            # Handle confidence safely
-            confidence_value = ai_data.get('confidence')
-            if confidence_value is not None:
-                confidence_value = float(confidence_value)
-            
-            # Handle boolean values safely (convert numpy.bool_ to Python bool)
-            def safe_bool(value):
-                if value is None:
-                    return None
-                return bool(value)
-            
-            # Build row data with only existing schema fields
+            # Build row data with safe type conversion
             row_data = {
-                "alert_id": alert_id,
-                "token_symbol": str(alert_data['token']),
-                "contract_address": str(data.get('contract_address', data.get('ca', ''))),
-                "network": str(alert_data['network']),
-                "analysis_type": str(alert_data['alert_type']),
+                "alert_id": safe_str(alert_id),
+                "token_symbol": safe_str(alert_data['token']),
+                "contract_address": safe_str(data.get('contract_address', data.get('ca', ''))),
+                "network": safe_str(alert_data['network']),
+                "analysis_type": safe_str(alert_data['alert_type']),
                 "alert_timestamp": datetime.utcnow().isoformat(),
-                "score": main_score,  # Use existing field name
+                "score": safe_float(main_score),
                 "eth_volume": eth_volume,
                 "wallet_count": wallet_count,
                 "confidence": confidence_value,
                 "ai_enhanced": safe_bool(ai_data.get('ai_enhanced', False)),
                 "is_verified": safe_bool(ai_data.get('is_verified')) if 'is_verified' in ai_data else None,
                 "has_liquidity": safe_bool(ai_data.get('has_liquidity')) if 'has_liquidity' in ai_data else None,
-                "honeypot_risk": float(ai_data.get('honeypot_risk', 0)) if ai_data.get('honeypot_risk') else None,
+                "honeypot_risk": safe_float(ai_data.get('honeypot_risk', 0)) if ai_data.get('honeypot_risk') else None,
                 "whale_coordination": safe_bool(ai_data.get('whale_coordination_detected')),
                 "pump_signals": safe_bool(ai_data.get('pump_signals_detected')),
                 "smart_money_active": safe_bool(ai_data.get('has_smart_money')),
@@ -190,7 +227,7 @@ class AlertMomentumTracker:
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             return False
-    
+        
     async def get_token_momentum(self, token_symbol: str, network: str, days_back: int = 5) -> Dict:
         """Get momentum analysis with combined scores"""
         try:

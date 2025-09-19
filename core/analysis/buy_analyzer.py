@@ -306,7 +306,7 @@ class CloudBuyAnalyzer:
     
    
     def _create_enhanced_result(self, analysis_results: Dict, purchases: List[Purchase]) -> AnalysisResult:
-        """Create enhanced analysis result with AI scoring details - FIXED to generate notifications"""
+        """Create enhanced analysis result with AI scoring details - FIXED to generate notifications with token age"""
         logger.info("Creating enhanced AI analysis result...")
         
         if not analysis_results:
@@ -329,10 +329,43 @@ class CloudBuyAnalyzer:
         contract_lookup = {p.token_bought: p.web3_analysis.get('contract_address', '') 
                         for p in purchases if p.web3_analysis}
         
+        # FIXED: Create token age lookup from purchases
+        token_age_lookup = {}
+        holder_count_lookup = {}
+        
+        for purchase in purchases:
+            token = purchase.token_bought
+            if purchase.web3_analysis:
+                # Extract token age from multiple possible sources
+                age_hours = None
+                holder_count = None
+                
+                # Try different field names where age might be stored
+                for field in ['token_age_hours', 'age_hours', 'contract_age_hours']:
+                    if field in purchase.web3_analysis and purchase.web3_analysis[field] is not None:
+                        age_hours = purchase.web3_analysis[field]
+                        break
+                
+                # Try holder count
+                for field in ['holder_count', 'holders', 'total_holders']:
+                    if field in purchase.web3_analysis and purchase.web3_analysis[field] is not None:
+                        holder_count = purchase.web3_analysis[field]
+                        break
+                
+                if age_hours is not None:
+                    token_age_lookup[token] = float(age_hours)
+                    logger.debug(f"Found token age for {token}: {age_hours:.1f} hours")
+                
+                if holder_count is not None:
+                    holder_count_lookup[token] = int(holder_count)
+                    logger.debug(f"Found holder count for {token}: {holder_count}")
+        
         logger.info(f"Contract lookup created for {len(contract_lookup)} tokens")
+        logger.info(f"Token age data found for {len(token_age_lookup)} tokens")
+        logger.info(f"Holder count data found for {len(holder_count_lookup)} tokens")
         
         if len(scores) > 0:
-            logger.info("Processing token rankings with contract addresses...")
+            logger.info("Processing token rankings with contract addresses and Web3 data...")
             
             # Create purchase stats
             purchase_stats = {}
@@ -356,10 +389,12 @@ class CloudBuyAnalyzer:
                     'total_eth': 0, 'count': 1, 'wallets': set(['unknown']), 'scores': [0]
                 })
                 
-                # Get contract address
+                # Get contract address, token age, and holder count
                 contract_address = contract_lookup.get(token, '')
+                token_age_hours = token_age_lookup.get(token)
+                holder_count = holder_count_lookup.get(token)
                 
-                # Enhanced token data with contract address
+                # Enhanced token data with contract address AND Web3 intelligence
                 token_data = {
                     'total_eth_spent': float(pstats['total_eth']),
                     'wallet_count': len(pstats['wallets']),
@@ -375,21 +410,50 @@ class CloudBuyAnalyzer:
                     'ai_enhanced': score_data.get('ai_enhanced', False),
                     'confidence': score_data.get('confidence', 0.7),
                     
-                    # Web3 data for notifications
+                    # FIXED: Include Web3 intelligence in main token data
+                    'token_age_hours': token_age_hours,
+                    'holder_count': holder_count,
+                    'is_verified': score_data.get('is_verified', False),
+                    'has_liquidity': score_data.get('has_liquidity', False),
+                    'liquidity_usd': score_data.get('liquidity_usd', 0),
+                    'honeypot_risk': score_data.get('honeypot_risk', 0.3),
+                    
+                    # Web3 data for notifications (comprehensive)
                     'web3_data': {
                         'contract_address': contract_address,
                         'ca': contract_address,
                         'token_symbol': token,
-                        'network': self.network
+                        'network': self.network,
+                        'token_age_hours': token_age_hours,
+                        'holder_count': holder_count,
+                        'is_verified': score_data.get('is_verified', False),
+                        'has_liquidity': score_data.get('has_liquidity', False),
+                        'liquidity_usd': score_data.get('liquidity_usd', 0),
+                        'honeypot_risk': score_data.get('honeypot_risk', 0.3),
+                        'smart_money_buying': score_data.get('smart_money_buying', False),
+                        'whale_accumulation': score_data.get('whale_accumulation', False),
+                        'has_coingecko_listing': score_data.get('has_coingecko_listing', False)
                     }
                 }
                 
-                # Include all enhanced data in tuple for notifications
-                # Format: (token_name, token_data, score, ai_data)
-                ranked_tokens.append((token, token_data, score_data['total_score'], score_data))
+                # Include all enhanced AI data with Web3 intelligence
+                ai_data_with_web3 = score_data.copy()
+                ai_data_with_web3.update({
+                    'token_age_hours': token_age_hours,
+                    'holder_count': holder_count,
+                    'contract_address': contract_address,
+                    'ca': contract_address
+                })
                 
+                # Format: (token_name, token_data, score, ai_data)
+                ranked_tokens.append((token, token_data, score_data['total_score'], ai_data_with_web3))
+                
+                # Enhanced logging with Web3 data
+                age_display = f", {token_age_hours/24:.1f}d old" if token_age_hours else ""
+                holder_display = f", {holder_count:,} holders" if holder_count else ""
                 ca_display = contract_address[:10] + '...' if len(contract_address) > 10 else 'No CA'
-                logger.info(f"✅ Added buy token: {token} (Score: {score_data['total_score']:.1f}, CA: {ca_display})")
+                
+                logger.info(f"✅ Added buy token: {token} (Score: {score_data['total_score']:.1f}, CA: {ca_display}{age_display}{holder_display})")
         else:
             logger.warning("❌ Still no scores available for buy ranking")
         
@@ -409,10 +473,13 @@ class CloudBuyAnalyzer:
             'ai_enhancement_enabled': is_enhanced,
             'data_quality_score': getattr(self.data_processor, '_last_quality_score', 1.0),
             'processing_stats': self.data_processor.get_processing_stats(),
+            'web3_data_enriched': len(token_age_lookup) + len(holder_count_lookup),
             'buy_analysis_metadata': {
                 'avg_eth_per_buy': total_eth / len(purchases) if purchases else 0,
                 'buy_signals_detected': len(ranked_tokens),
-                'highest_buy_score': ranked_tokens[0][2] if ranked_tokens else 0
+                'highest_buy_score': ranked_tokens[0][2] if ranked_tokens else 0,
+                'tokens_with_age_data': len(token_age_lookup),
+                'tokens_with_holder_data': len(holder_count_lookup)
             }
         })
         

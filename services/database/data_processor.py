@@ -519,10 +519,10 @@ class UnifiedDataProcessor:
         return web3_results
     
     async def _get_token_web3_intelligence(self, session, token_symbol: str, contract_address: str, network: str) -> Dict:
-        """Get Web3 intelligence for a single token"""
+        """Get Web3 intelligence for a single token - ADD HOLDER DATA LOGGING"""
         try:
             if not contract_address or len(contract_address) != 42:
-                return self._default_web3_intelligence(token_symbol, network)
+                return self._apply_heuristic_intelligence(token_symbol, network, token_info)
             
             intelligence = {
                 'contract_address': contract_address.lower(),
@@ -533,34 +533,51 @@ class UnifiedDataProcessor:
                 'has_liquidity': False,
                 'liquidity_usd': 0,
                 'honeypot_risk': 0.3,
-                'data_sources': []
+                'data_sources': [],
+                'smart_money_buying': False,
+                'whale_accumulation': False,
+                # CRITICAL: Initialize holder fields
+                'holder_count': None,
+                'token_age_hours': None
             }
             
-            # Batch intelligence checks
+            # CRITICAL: Include holder data in batch processing
             tasks = [
-                self._check_contract_verification(session, contract_address, network),
-                self._check_dexscreener_liquidity(session, contract_address),
-                self._check_coingecko_data(session, contract_address, token_symbol)
+                self._check_contract_verification_ai(session, contract_address, network),
+                self._check_dexscreener_liquidity_ai(session, contract_address),
+                self._check_coingecko_data_ai(session, contract_address, token_symbol),
+                self._get_holder_data(contract_address, network)  # ADD THIS LINE IF MISSING
             ]
             
             results = await asyncio.gather(*tasks, return_exceptions=True)
             
             # Process results
-            for result in results:
+            for i, result in enumerate(results):
                 if isinstance(result, dict) and result:
-                    intelligence.update(result)
-                    if result.get('source'):
-                        intelligence['data_sources'].append(result['source'])
+                    if i == 3:  # Holder data is the 4th task
+                        # CRITICAL: Log holder data processing
+                        logger.info(f"📊 Processing holder data for {token_symbol}: {result}")
+                        if 'holder_count' in result:
+                            intelligence['holder_count'] = result['holder_count']
+                            intelligence['data_sources'].append('etherscan_v2_holders')
+                            logger.info(f"✅ {token_symbol} holder count integrated: {result['holder_count']}")
+                        else:
+                            logger.warning(f"❌ {token_symbol} holder data empty: {result}")
+                    else:
+                        intelligence.update(result)
+                        if result.get('source'):
+                            intelligence['data_sources'].append(result['source'])
             
-            # Apply heuristics
-            intelligence = self._apply_heuristic_analysis(intelligence, token_symbol)
+            # CRITICAL: Log final intelligence before return
+            logger.info(f"🎯 Final intelligence for {token_symbol}: holder_count={intelligence.get('holder_count')}, data_sources={intelligence.get('data_sources')}")
             
             return intelligence
             
         except Exception as e:
             logger.debug(f"Token intelligence failed for {token_symbol}: {e}")
-            return self._default_web3_intelligence(token_symbol, network)
-    
+            return self._apply_heuristic_intelligence(token_symbol, network, token_info)
+
+
     async def _get_session(self):
         """Get HTTP session"""
         if not self._session:
@@ -687,76 +704,106 @@ class UnifiedDataProcessor:
             logger.debug(f"Token age calculation failed: {e}")
             return None
 
-    async def _get_holder_data_from_api(self, session, contract_address: str, network: str) -> Dict:
-        """Get holder data using your API config with Gini coefficient"""
+    async def _get_holder_data(self, contract_address: str, network: str) -> Dict:
+        """ENHANCED: Get holder count with V2 API and detailed logging"""
         try:
-            if not self.config.etherscan_api_key:
-                return {'holder_count': None, 'source': 'no_api_key'}
+            logger.info(f"🔍 ATTEMPTING holder data for {contract_address[:10]}... on {network}")
             
-            # Get chain ID for network from your config
+            if not self.session:
+                logger.warning("❌ No session available for holder data")
+                return {}
+            
+            # Use V2 API configuration
+            if not self.config.etherscan_api_key:
+                logger.warning("❌ No Etherscan API key - skipping holder data")
+                return {}
+            
+            # Get chain ID for V2 API
             chain_id = self.config.chain_ids.get(network.lower())
             if not chain_id:
-                return {'holder_count': None, 'source': 'unsupported_network'}
+                logger.warning(f"❌ No chain ID for {network} - skipping holder data")
+                return {}
             
-            # Use API for holder data
-            holder_url = f"{self.config.etherscan_endpoint}?chainid={chain_id}&module=token&action=tokenholderlist&contractaddress={contract_address}&page=1&offset=100&apikey={self.config.etherscan_api_key}"
+            # Build V2 URL
+            url = f"{self.config.etherscan_endpoint}?chainid={chain_id}&module=token&action=tokenholderlist&contractaddress={contract_address}&page=1&offset=100&apikey={self.config.etherscan_api_key}"
             
-            # Apply rate limiting from your config
+            logger.info(f"🌐 V2 Holder API URL: {url[:100]}...")
+            
+            # Apply rate limiting
             await asyncio.sleep(self.config.etherscan_api_rate_limit)
             
-            async with session.get(holder_url, timeout=aiohttp.ClientTimeout(total=12)) as response:
+            async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                logger.info(f"📡 V2 Holder API response: {response.status}")
+                
                 if response.status == 200:
                     data = await response.json()
+                    logger.info(f"📊 V2 Holder API data: status={data.get('status')}, message={data.get('message', 'No message')}")
+                    
                     if data.get('status') == '1' and data.get('result'):
                         holders = data.get('result', [])
                         holder_count = len(holders)
                         
-                        # Calculate holder concentration with Gini coefficient
-                        concentration_data = {}
-                        if holder_count > 1:
-                            try:
-                                balances = []
-                                for holder in holders:
-                                    balance = float(holder.get('TokenHolderQuantity', 0))
-                                    balances.append(balance)
-                                
-                                if balances and sum(balances) > 0:
-                                    total_supply = sum(balances)
-                                    top_holder_percent = max(balances) / total_supply
-                                    
-                                    # Calculate Gini coefficient
-                                    gini_coefficient = self._calculate_gini_coefficient(balances)
-                                    
-                                    concentration_data.update({
-                                        'top_holder_concentration': top_holder_percent,
-                                        'gini_coefficient': gini_coefficient,
-                                        'concentration_risk': self._assess_concentration_risk(gini_coefficient, top_holder_percent),
-                                        'distribution_quality': self._get_distribution_quality(gini_coefficient)
-                                    })
-                                    
-                            except Exception as e:
-                                logger.debug(f"Concentration calculation failed: {e}")
-                        
-                        logger.info(f"📊 {contract_address[:10]}... has {holder_count} holders (Gini: {concentration_data.get('gini_coefficient', 'N/A')})")
-                        
-                        return {
-                            'holder_count': holder_count,
-                            'chain_id': chain_id,
-                            'source': 'etherscan',
-                            **concentration_data
-                        }
+                        if holder_count > 0:
+                            logger.info(f"✅ SUCCESS: {contract_address[:10]}... has {holder_count} holders on {network}")
+                            return {
+                                'holder_count': holder_count,
+                                'top_holder_percentage': self._calculate_concentration(holders),
+                                'data_source': 'etherscan_v2'
+                            }
+                        else:
+                            logger.warning(f"⚠️ Empty holder list for {contract_address[:10]}...")
+                            return {}
                     else:
                         error_msg = data.get('message', 'Unknown error')
-                        logger.debug(f"API holder error: {error_msg}")
-                        return {'holder_count': None, 'source': 'api_error', 'error': error_msg}
+                        logger.error(f"❌ V2 API error: {error_msg}")
+                        return {}
                 else:
-                    logger.debug(f"API holder HTTP {response.status}")
-                    return {'holder_count': None, 'source': f'http_{response.status}'}
+                    logger.error(f"❌ HTTP {response.status} for holder data")
+                    return {}
             
         except Exception as e:
-            logger.debug(f"Holder data failed: {e}")
-            return {'holder_count': None, 'source': 'exception', 'error': str(e)}
-
+            logger.error(f"❌ Holder data exception for {contract_address[:10]}...: {e}")
+            return {}
+    
+    def _calculate_concentration(self, holders: List) -> float:
+        """Calculate holder concentration from V2 API response"""
+        if not holders or len(holders) < 2:
+            return 1.0
+        
+        try:
+            # V2 API response format
+            total_supply = 0
+            max_holding = 0
+            
+            for holder in holders:
+                # V2 API typically uses 'TokenHolderQuantity' field
+                quantity_str = holder.get('TokenHolderQuantity', '0')
+                
+                try:
+                    # Handle hex or decimal values
+                    if quantity_str.startswith('0x'):
+                        quantity = int(quantity_str, 16)
+                    else:
+                        quantity = float(quantity_str)
+                    
+                    total_supply += quantity
+                    max_holding = max(max_holding, quantity)
+                    
+                except (ValueError, TypeError):
+                    logger.debug(f"Could not parse holder quantity: {quantity_str}")
+                    continue
+            
+            if total_supply > 0 and max_holding > 0:
+                concentration = max_holding / total_supply
+                logger.debug(f"V2 holder concentration: {concentration:.1%} (top holder)")
+                return concentration
+            
+            return 0.5  # Default if calculation fails
+            
+        except Exception as e:
+            logger.debug(f"Error calculating V2 holder concentration: {e}")
+            return 0.5
+    
     def _calculate_gini_coefficient(self, balances: list) -> float:
         """Calculate Gini coefficient for holder distribution (0=equal, 1=unequal)"""
         try:
@@ -831,7 +878,7 @@ class UnifiedDataProcessor:
 
 
     async def _get_token_web3_intelligence(self, session, token_symbol: str, contract_address: str, network: str) -> Dict:
-        """UPDATED: Get Web3 intelligence using your API config"""
+        """FIXED: Get Web3 intelligence using your API config with proper holder count flow"""
         try:
             if not contract_address or len(contract_address) != 42:
                 return self._default_web3_intelligence(token_symbol, network)
@@ -847,21 +894,25 @@ class UnifiedDataProcessor:
                 'honeypot_risk': 0.3,
                 'data_sources': [],
                 'token_age_hours': None,
-                'holder_count': None
+                'holder_count': None  # CRITICAL: Initialize this field
             }
             
-            # Run intelligence checks concurrently - UPDATED to use your API
+            # FIXED: Run intelligence checks concurrently with holder data
             tasks = [
-                self._check_contract_verification(session, contract_address, network),  # Uses your config now
+                self._check_contract_verification(session, contract_address, network),
                 self._check_dexscreener_liquidity(session, contract_address),
-                self._get_holder_data_from_api(session, contract_address, network)  # New method with your config
+                self._get_holder_data_from_api(session, contract_address, network)  # ADDED: Dedicated holder check
             ]
             
             results = await asyncio.gather(*tasks, return_exceptions=True)
             
-            # Process results
+            # FIXED: Process results and ensure holder_count is preserved
             for result in results:
                 if isinstance(result, dict) and result:
+                    # Debug log to see what data we're getting
+                    if 'holder_count' in result and result['holder_count'] is not None:
+                        logger.info(f"🔍 Found holder data for {token_symbol}: {result['holder_count']} holders")
+                    
                     intelligence.update(result)
                     if result.get('source'):
                         intelligence['data_sources'].append(result['source'])
@@ -870,12 +921,88 @@ class UnifiedDataProcessor:
             if not intelligence['data_sources']:
                 intelligence = self._apply_heuristic_analysis(intelligence, token_symbol)
             
+            # CRITICAL: Log final holder count for debugging
+            final_holder_count = intelligence.get('holder_count')
+            if final_holder_count is not None:
+                logger.info(f"✅ {token_symbol}: Final holder count = {final_holder_count}")
+            else:
+                logger.warning(f"❌ {token_symbol}: No holder count data available")
+            
             return intelligence
             
         except Exception as e:
             logger.debug(f"Token Web3 intelligence failed for {token_symbol}: {e}")
             return self._default_web3_intelligence(token_symbol, network)
 
+    def _apply_heuristic_analysis(self, intelligence: Dict, token_symbol: str) -> Dict:
+        """Apply heuristic analysis with holder count estimates"""
+        
+        # If we already have API data, don't override it
+        if intelligence.get('data_sources'):
+            return intelligence
+        
+        symbol_upper = token_symbol.upper()
+        
+        # Major tokens with known characteristics
+        if symbol_upper in ['WETH', 'USDC', 'USDT', 'DAI', 'ETH']:
+            intelligence.update({
+                'is_verified': True,
+                'has_liquidity': True,
+                'honeypot_risk': 0.0,
+                'holder_count': 500000,  # Major tokens have many holders
+                'token_age_hours': 8760 * 3,  # 3+ years
+                'heuristic_classification': 'major_token'
+            })
+            logger.info(f"🎯 Heuristic: {token_symbol} assigned 500k holders (major token)")
+        
+        # DeFi tokens
+        elif symbol_upper in ['UNI', 'AAVE', 'COMP', 'MKR', 'SNX', 'SUSHI', 'CRV']:
+            intelligence.update({
+                'is_verified': True,
+                'has_liquidity': True,
+                'honeypot_risk': 0.1,
+                'holder_count': 50000,  # DeFi tokens have good distribution
+                'token_age_hours': 8760 * 2,  # 2+ years
+                'heuristic_classification': 'defi_token'
+            })
+            logger.info(f"🎯 Heuristic: {token_symbol} assigned 50k holders (DeFi token)")
+        
+        # Popular meme tokens
+        elif symbol_upper in ['PEPE', 'SHIB', 'DOGE', 'FLOKI', 'WIF', 'BONK']:
+            intelligence.update({
+                'is_verified': True,
+                'has_liquidity': True,
+                'honeypot_risk': 0.2,
+                'holder_count': 100000,  # Meme tokens often have wide distribution
+                'token_age_hours': 8760,  # 1+ year
+                'heuristic_classification': 'meme_token'
+            })
+            logger.info(f"🎯 Heuristic: {token_symbol} assigned 100k holders (meme token)")
+        
+        # Base ecosystem tokens
+        elif symbol_upper in ['AERO', 'ZORA'] and intelligence.get('network') == 'base':
+            intelligence.update({
+                'is_verified': True,
+                'has_liquidity': True,
+                'honeypot_risk': 0.1,
+                'holder_count': 10000,  # Base ecosystem tokens
+                'token_age_hours': 4380,  # 6 months
+                'heuristic_classification': 'l2_token'
+            })
+            logger.info(f"🎯 Heuristic: {token_symbol} assigned 10k holders (Base token)")
+        
+        # Unknown tokens - conservative estimate
+        else:
+            intelligence.update({
+                'is_verified': False,
+                'has_liquidity': False,
+                'honeypot_risk': 0.5,
+                'holder_count': 500,  # Conservative estimate for unknown tokens
+                'heuristic_classification': 'unknown'
+            })
+            logger.info(f"🎯 Heuristic: {token_symbol} assigned 500 holders (unknown token)")
+        
+        return intelligence
     
     async def _check_dexscreener_liquidity(self, session, contract_address: str) -> Dict:
         """Enhanced DexScreener liquidity check with better error handling"""
@@ -1058,6 +1185,8 @@ class UnifiedDataProcessor:
             'liquidity_usd': 0,
             'honeypot_risk': 0.4,
             'data_sources': [],
+            'holder_count': None,  
+            'token_age_hours': None,
             'error': 'api_unavailable'
         }
     
@@ -1227,14 +1356,14 @@ class UnifiedDataProcessor:
         return datetime.utcnow()
     
     def _create_result_with_contracts(self, analysis_results: Dict, purchases: List[Purchase], analysis_type: str) -> Dict:
-        """Create result with contract addresses and Web3 intelligence"""
+        """Create result with contract addresses and Web3 intelligence INCLUDING token age"""
         if not analysis_results or not analysis_results.get('scores'):
             return self._create_empty_result(analysis_type)
         
         scores = analysis_results['scores']
         ranked_tokens = []
         
-        # Build lookups
+        # Build lookups including Web3 intelligence
         contract_lookup = {}
         purchase_stats = {}
         web3_intelligence = {}
@@ -1247,7 +1376,14 @@ class UnifiedDataProcessor:
                 ca = purchase.web3_analysis.get('contract_address', '') or purchase.web3_analysis.get('ca', '')
                 if ca:
                     contract_lookup[token] = ca
+                    
+                    # IMPORTANT: Store the complete Web3 intelligence data
                     web3_intelligence[token] = purchase.web3_analysis
+                    
+                    # Log token age if available
+                    age = purchase.web3_analysis.get('token_age_hours')
+                    if age is not None:
+                        logger.info(f"Token age data available for {token}: {age:.1f} hours")
             
             # Purchase stats
             if token not in purchase_stats:
@@ -1262,7 +1398,7 @@ class UnifiedDataProcessor:
             purchase_stats[token]['wallets'].add(purchase.wallet_address)
             purchase_stats[token]['scores'].append(purchase.sophistication_score or 0)
         
-        # Create ranked results
+        # Create ranked results with complete Web3 data
         for token, score_data in scores.items():
             stats = purchase_stats.get(token, {'total_eth': 0, 'count': 1, 'wallets': set(), 'scores': [0]})
             contract_address = contract_lookup.get(token, '')
@@ -1292,7 +1428,7 @@ class UnifiedDataProcessor:
                     'analysis_type': 'buy'
                 }
             
-            # Add Web3 intelligence
+            # Add Web3 intelligence - ENSURE ALL DATA IS PRESERVED
             token_data.update({
                 'ai_enhanced': score_data.get('ai_enhanced', False),
                 'confidence': score_data.get('confidence', 0.75),
@@ -1302,13 +1438,40 @@ class UnifiedDataProcessor:
                     'ca': contract_address,
                     'token_symbol': token,
                     'network': web3_data.get('network', 'unknown'),
-                    **web3_data
+                    'token_age_hours': web3_data.get('token_age_hours'),
+                    'holder_count': web3_data.get('holder_count'),
+                    'is_verified': web3_data.get('is_verified', False),
+                    'has_liquidity': web3_data.get('has_liquidity', False),
+                    'liquidity_usd': web3_data.get('liquidity_usd', 0),
+                    'honeypot_risk': web3_data.get('honeypot_risk', 0),
+                    'age_source': web3_data.get('age_source'),
+                    'data_sources': web3_data.get('data_sources', [])
                 }
             })
             
-            # Create AI data with Web3 intelligence
+            # Create AI data with Web3 intelligence - PRESERVE ALL FIELDS
             ai_data_with_web3 = score_data.copy()
-            ai_data_with_web3.update(web3_data)
+            ai_data_with_web3.update({
+                # Add Web3 fields directly to ai_data for easier access
+                'token_age_hours': web3_data.get('token_age_hours'),
+                'holder_count': web3_data.get('holder_count'),
+                'is_verified': web3_data.get('is_verified', False),
+                'has_liquidity': web3_data.get('has_liquidity', False),
+                'liquidity_usd': web3_data.get('liquidity_usd', 0),
+                'honeypot_risk': web3_data.get('honeypot_risk', 0),
+                'has_coingecko_listing': web3_data.get('has_coingecko_listing', False),
+                'smart_money_buying': web3_data.get('smart_money_buying', False),
+                'whale_accumulation': web3_data.get('whale_accumulation', False),
+                'age_source': web3_data.get('age_source'),
+                'data_sources': web3_data.get('data_sources', [])
+            })
+            
+            # Log what we're including
+            age = web3_data.get('token_age_hours')
+            if age is not None:
+                logger.info(f"Including token age in alert data for {token}: {age:.1f} hours from {web3_data.get('age_source', 'unknown')}")
+            else:
+                logger.info(f"No token age data available for {token}")
             
             ranked_tokens.append((token, token_data, score_data['total_score'], ai_data_with_web3))
         
@@ -1324,6 +1487,7 @@ class UnifiedDataProcessor:
         unique_tokens = len(set(p.token_bought for p in purchases))
         verified_tokens = sum(1 for _, _, _, ai_data in ranked_tokens if ai_data.get('is_verified', False))
         liquid_tokens = sum(1 for _, _, _, ai_data in ranked_tokens if ai_data.get('has_liquidity', False))
+        tokens_with_age = sum(1 for _, _, _, ai_data in ranked_tokens if ai_data.get('token_age_hours') is not None)
         
         result = {
             'network': 'unknown',
@@ -1337,6 +1501,7 @@ class UnifiedDataProcessor:
                 'web3_intelligence_stats': {
                     'verified_tokens': verified_tokens,
                     'liquid_tokens': liquid_tokens,
+                    'tokens_with_age_data': tokens_with_age,
                     'total_analyzed': len(ranked_tokens)
                 }
             },
@@ -1345,10 +1510,10 @@ class UnifiedDataProcessor:
             'scores': scores
         }
         
-        logger.info(f"✅ {analysis_type.upper()}: {verified_tokens} verified, {liquid_tokens} with liquidity")
+        logger.info(f"{analysis_type.upper()}: {verified_tokens} verified, {liquid_tokens} with liquidity, {tokens_with_age} with age data")
         
         return result
-    
+
     def _create_empty_result(self, analysis_type: str) -> Dict:
         """Create empty result"""
         return {
@@ -1365,7 +1530,7 @@ class UnifiedDataProcessor:
         }
     
     def get_processing_stats(self) -> Dict:
-        """Get processing statistics"""
+        """Get processing statistics including token age collection"""
         return {
             'transfers_processed': self.stats.get('transfers_processed', 0),
             'transfers_stored': self.stats.get('transfers_stored', 0),
@@ -1373,10 +1538,27 @@ class UnifiedDataProcessor:
             'ai_enhanced_tokens': self.stats.get('ai_enhanced_tokens', 0),
             'web3_enriched_tokens': self.stats.get('web3_enriched_tokens', 0),
             'ai_available': self._ai_enabled if self._ai_enabled is not None else False,
-            'web3_intelligence_mode': 'batch_integrated',
-            'processing_mode': 'unified_batch_web3'
+            'web3_intelligence_mode': 'batch_integrated_with_age',
+            'processing_mode': 'unified_batch_web3_age_collection',
+            'token_age_collection': 'api_sources_only'
         }
-    
+        
+    def _apply_web3_intelligence_to_purchases(self, purchases: List, web3_intelligence: Dict):
+        """Apply Web3 intelligence to all purchases - PRESERVE ALL FIELDS"""
+        for purchase in purchases:
+            token = purchase.token_bought
+            if token in web3_intelligence:
+                # Update existing web3_analysis with intelligence
+                if purchase.web3_analysis:
+                    purchase.web3_analysis.update(web3_intelligence[token])
+                else:
+                    purchase.web3_analysis = web3_intelligence[token].copy()
+                
+                # Log what we applied
+                age = purchase.web3_analysis.get('token_age_hours')
+                if age is not None:
+                    logger.debug(f"Applied token age to {token}: {age:.1f} hours")
+                
     async def validate_data_quality(self, purchases: List[Purchase]) -> Dict:
         """Validate data quality"""
         if not purchases:

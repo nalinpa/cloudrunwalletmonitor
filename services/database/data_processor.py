@@ -117,100 +117,124 @@ class UnifiedDataProcessor:
     # SIMPLIFIED PROCESSING - NO INDIVIDUAL WEB3 CALLS
     # ============================================================================
     
-    async def process_transfers_to_purchases(self, wallets: List[WalletInfo], 
-                                           all_transfers: Dict, network: str,
-                                           store_data: bool = False) -> List[Purchase]:
-        """SIMPLIFIED: Process transfers without individual Web3 calls"""
-        purchases = []
+    async def process_transfers_to_sells(self, wallets: List[WalletInfo], 
+                                   all_transfers: Dict, network: str,
+                                   store_data: bool = False) -> List[Purchase]:
+        """Enhanced sell processing with contract address debugging"""
+        sells = []
         all_transfer_records = []
         wallet_scores = {w.address: w.score for w in wallets}
         
-        logger.info(f"Processing {len(wallets)} wallets for BUY analysis")
-        logger.info(f"Web3 intelligence will be processed in batch during AI analysis")
+        logger.info(f"Processing {len(wallets)} wallets for SELL analysis")
+        logger.info(f"🔍 Contract address extraction debugging enabled")
+        
+        total_outgoing_transfers = 0
+        contracts_found = 0
         
         for wallet in wallets:
             address = wallet.address
             transfers = all_transfers.get(address, {"incoming": [], "outgoing": []})
             
-            incoming = transfers.get('incoming', [])
             outgoing = transfers.get('outgoing', [])
+            incoming = transfers.get('incoming', [])
             
-            for transfer in incoming:
+            total_outgoing_transfers += len(outgoing)
+            
+            # DEBUG: Show structure of first few outgoing transfers
+            if outgoing and len(sells) < 2:  # Only debug first few
+                logger.info(f"🔍 Debugging outgoing transfers for wallet {address[:10]}...")
+                self.debug_transfer_structure(outgoing, "sell")
+            
+            for transfer in outgoing:
                 try:
                     asset = transfer.get("asset")
                     if not asset or asset == "ETH":
                         continue
                     
-                    amount = float(transfer.get("value", "0"))
-                    if amount <= 0:
+                    amount_sold = float(transfer.get("value", "0"))
+                    if amount_sold <= 0:
                         continue
                     
+                    # ENHANCED: Contract address extraction with logging
                     contract_address = self.extract_contract_address(transfer)
+                    if contract_address:
+                        contracts_found += 1
+                        logger.info(f"✅ {asset}: Found contract {contract_address[:10]}...")
+                    else:
+                        logger.warning(f"❌ {asset}: No contract address found")
+                    
                     tx_hash = transfer.get("hash", "")
                     block_num = transfer.get("blockNum", "0x0")
                     block_number = int(block_num, 16) if block_num != "0x0" else 0
                     
-                    eth_spent = self._calculate_eth_spent(outgoing, tx_hash, block_num)
+                    eth_received = self._calculate_eth_received(incoming, tx_hash, block_num)
                     
-                    if self.is_excluded_token(asset, contract_address) or eth_spent < 0.00001:
+                    if self.is_excluded_token(asset, contract_address) or eth_received < 0.000001:
                         continue
                     
-                    # SIMPLIFIED: Create purchase with basic contract info only
-                    purchase = Purchase(
+                    # Create sell with contract address
+                    sell = Purchase(
                         transaction_hash=tx_hash,
                         token_bought=asset,
-                        amount_received=amount,
-                        eth_spent=eth_spent,
+                        amount_received=eth_received,
+                        eth_spent=0,
                         wallet_address=address,
-                        platform="DEX",
+                        platform="Transfer",
                         block_number=block_number,
                         timestamp=self._parse_timestamp(transfer, block_number),
                         sophistication_score=wallet_scores.get(address, 0),
                         web3_analysis={
                             "contract_address": contract_address,
                             "ca": contract_address,
+                            "amount_sold": amount_sold,
+                            "is_sell": True,
                             "token_symbol": asset,
                             "network": network
-                            # NO Web3 intelligence here - will be added during AI analysis
                         }
                     )
                     
-                    purchases.append(purchase)
+                    sells.append(sell)
                     
                     # Storage record
                     if store_data:
                         transfer_record = Transfer(
                             wallet_address=address,
                             token_address=contract_address,
-                            transfer_type=TransferType.BUY,
+                            transfer_type=TransferType.SELL,
                             timestamp=self._parse_timestamp(transfer, block_number),
-                            cost_in_eth=eth_spent,
+                            cost_in_eth=eth_received,
                             transaction_hash=tx_hash,
                             block_number=block_number,
-                            token_amount=amount,
+                            token_amount=amount_sold,
                             token_symbol=asset,
                             network=network,
-                            platform="DEX",
+                            platform="Transfer",
                             wallet_sophistication_score=wallet_scores.get(address, 0)
                         )
                         all_transfer_records.append(transfer_record)
                 
                 except Exception as e:
-                    logger.debug(f"Error processing transfer: {e}")
+                    logger.debug(f"Error processing sell: {e}")
                     continue
+        
+        # Summary logging
+        logger.info(f"📊 SELL PROCESSING SUMMARY:")
+        logger.info(f"  Total outgoing transfers: {total_outgoing_transfers}")
+        logger.info(f"  Contract addresses found: {contracts_found}")
+        logger.info(f"  Valid sells created: {len(sells)}")
+        logger.info(f"  Contract extraction rate: {contracts_found/total_outgoing_transfers*100 if total_outgoing_transfers > 0 else 0:.1f}%")
         
         # Store transfers
         if store_data and self.bigquery_transfer_service and all_transfer_records:
             try:
                 stored_count = await self.bigquery_transfer_service.store_transfers_batch(all_transfer_records)
                 self._last_stored_count = stored_count
-                logger.info(f"✅ Stored {stored_count} transfer records")
+                logger.info(f"✅ Stored {stored_count} sell records")
             except Exception as e:
-                logger.error(f"❌ Failed to store transfers: {e}")
+                logger.error(f"❌ Failed to store sells: {e}")
         
-        logger.info(f"📊 Created {len(purchases)} purchases for AI analysis")
-        return purchases
-    
+        return sells
+
     async def process_transfers_to_sells(self, wallets: List[WalletInfo], 
                                        all_transfers: Dict, network: str,
                                        store_data: bool = False) -> List[Purchase]:
@@ -540,7 +564,7 @@ class UnifiedDataProcessor:
             }
             
             tasks = [
-                self._check_contract_verification_ai(session, contract_address, network),
+                self._check_contract_verification(session, contract_address, network),
                 self._check_dexscreener_liquidity_ai(session, contract_address),
                 self._check_coingecko_data_ai(session, contract_address, token_symbol)
             ]
@@ -570,53 +594,52 @@ class UnifiedDataProcessor:
         return self._session
     
     async def _check_contract_verification(self, session, contract_address: str, network: str) -> Dict:
-        """Simple contract verification using only Etherscan V2 API - NO HOLDER COUNT"""
+        """Fixed Etherscan V2 API contract verification"""
         try:
             if not self.config.etherscan_api_key:
-                logger.debug("No Etherscan API key - returning unverified")
-                return {'is_verified': False, 'source': 'no_api_key'}
+                logger.debug("No Etherscan API key - skipping verification")
+                return {'verification_skipped': 'no_api_key'}
             
-            # Get chain ID for network
+            # Get chain ID for Etherscan V2
             chain_id = self.config.chain_ids.get(network.lower())
             if not chain_id:
-                logger.debug(f"No chain ID configured for {network} - returning unverified")
-                return {'is_verified': False, 'source': 'unsupported_network'}
+                logger.debug(f"No chain ID for {network}")
+                return {'verification_skipped': 'unsupported_network'}
             
-            # Build V2 API URL
             url = f"{self.config.etherscan_endpoint}?chainid={chain_id}&module=contract&action=getsourcecode&address={contract_address}&apikey={self.config.etherscan_api_key}"
             
-            # Apply rate limiting
+            # Rate limiting
             await asyncio.sleep(self.config.etherscan_api_rate_limit)
             
-            logger.debug(f"🔍 V2 API check: {contract_address[:10]}... on {network} (chain {chain_id})")
+            logger.info(f"🔍 V2 API check: {contract_address[:10]}... on {network} (chain {chain_id})")
             
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=12)) as response:
                 if response.status == 200:
                     data = await response.json()
                     
-                    # Handle API errors
+                    # Handle V2 API errors
                     if data.get('status') == '0':
                         error_msg = data.get('message', 'Unknown error')
-                        logger.debug(f"V2 API error for {network}: {error_msg}")
-                        return {'is_verified': False, 'source': 'api_error', 'error': error_msg}
+                        logger.warning(f"V2 API error for {network}: {error_msg}")
+                        return {'verification_failed': 'api_error', 'source': 'etherscan_v2_error', 'error': error_msg}
                     
-                    # Parse successful response
+                    # Parse V2 API successful response
                     if data.get('status') == '1' and data.get('result'):
                         result = data['result'][0] if isinstance(data['result'], list) else data['result']
                         
                         source_code = result.get('SourceCode', '')
                         contract_name = result.get('ContractName', '')
                         
-                        # Simple verification check
+                        # Enhanced verification check
                         has_source = bool(source_code and source_code.strip() and 
                                         source_code not in ['', '{{}}', 'Contract source code not verified'])
                         
                         is_verified = has_source
                         
                         if is_verified:
-                            logger.info(f"✅ {network.upper()} verified: {contract_name} ({contract_address[:10]}...)")
+                            logger.info(f"✅ V2 {network.upper()} verified: {contract_name} ({contract_address[:10]}...)")
                         else:
-                            logger.info(f"❌ {network.upper()} unverified: ({contract_address[:10]}...)")
+                            logger.info(f"❌ V2 {network.upper()} unverified: ({contract_address[:10]}...)")
                         
                         return {
                             'is_verified': is_verified,
@@ -624,21 +647,23 @@ class UnifiedDataProcessor:
                             'compiler_version': result.get('CompilerVersion', ''),
                             'optimization_used': result.get('OptimizationUsed') == '1',
                             'has_source_code': has_source,
+                            'source_code_length': len(source_code) if source_code else 0,
                             'chain_id': chain_id,
-                            'source': 'etherscan_v2'
+                            'source': 'etherscan_v2',
+                            'verification_source': 'etherscan_v2'
                         }
                     else:
-                        logger.debug(f"V2 API no result for {contract_address}")
-                        return {'is_verified': False, 'source': 'no_result'}
+                        logger.warning(f"V2 API no result for {contract_address}")
+                        return {'verification_failed': 'no_result', 'source': 'etherscan_v2_no_result'}
                 
                 else:
-                    logger.debug(f"V2 API HTTP {response.status} for {network}")
-                    return {'is_verified': False, 'source': f'http_{response.status}'}
-        
+                    logger.warning(f"V2 API HTTP {response.status} for {network}")
+                    return {'verification_failed': f'http_{response.status}', 'source': f'etherscan_v2_http_{response.status}'}
+            
         except Exception as e:
-            logger.debug(f"V2 API exception: {e}")
-            return {'is_verified': False, 'source': 'exception', 'error': str(e)}
-        
+            logger.warning(f"V2 API exception: {e}")
+            return {'verification_failed': 'exception', 'source': 'etherscan_v2_exception', 'error': str(e)}
+ 
     async def _get_token_age_from_api(self, session, contract_address: str, chain_id: int) -> float:
         """Get token age using your API config"""
         try:
@@ -858,36 +883,57 @@ class UnifiedDataProcessor:
         return False
     
     def extract_contract_address(self, transfer: Dict) -> str:
-        """Extract contract address from transfer"""
+        """ENHANCED contract address extraction from Alchemy transfers"""
         contract_address = ""
         
-        # Method 1: rawContract.address
+        # Method 1: rawContract.address (primary for Alchemy)
         raw_contract = transfer.get("rawContract", {})
         if isinstance(raw_contract, dict) and raw_contract.get("address"):
             contract_address = raw_contract["address"]
+            logger.debug(f"📋 Found CA via rawContract: {contract_address[:10]}...")
         
-        # Method 2: contractAddress field
+        # Method 2: contractAddress field (alternative)
         elif transfer.get("contractAddress"):
             contract_address = transfer["contractAddress"]
+            logger.debug(f"📋 Found CA via contractAddress: {contract_address[:10]}...")
         
-        # Method 3: 'to' address for ERC20
+        # Method 3: 'to' address for ERC20 (fallback)
         elif transfer.get("to"):
             to_address = transfer["to"]
             if to_address != "0x0000000000000000000000000000000000000000":
                 contract_address = to_address
+                logger.debug(f"📋 Found CA via 'to' address: {contract_address[:10]}...")
         
-        # Clean and validate
+        # Method 4: Check if this is an ERC20 transfer with contract info
+        elif transfer.get("category") == "erc20" and transfer.get("rawContract"):
+            # Sometimes rawContract is a different structure
+            raw = transfer.get("rawContract")
+            if isinstance(raw, dict):
+                contract_address = raw.get("address", "")
+            elif isinstance(raw, str):
+                contract_address = raw
+        
+        # Clean and validate the address
         if contract_address:
             contract_address = contract_address.strip().lower()
             if not contract_address.startswith('0x'):
                 contract_address = '0x' + contract_address
             
-            # Validate Ethereum address format
+            # Validate Ethereum address format (42 characters)
             if len(contract_address) == 42:
+                logger.info(f"✅ Extracted contract address: {contract_address[:10]}...{contract_address[-4:]}")
                 return contract_address
+            else:
+                logger.warning(f"❌ Invalid contract address length: {len(contract_address)} chars")
+        
+        # If no contract address found, log the transfer structure for debugging
+        logger.warning("❌ No contract address found in transfer")
+        logger.debug(f"Transfer keys: {list(transfer.keys())}")
+        if "rawContract" in transfer:
+            logger.debug(f"rawContract: {transfer['rawContract']}")
         
         return ""
-    
+
     def _calculate_eth_spent(self, outgoing_transfers: List[Dict], 
                            target_tx: str, target_block: str) -> float:
         """Calculate ETH spent"""
@@ -1001,14 +1047,14 @@ class UnifiedDataProcessor:
         return datetime.utcnow()
     
     def _create_result_with_contracts(self, analysis_results: Dict, purchases: List[Purchase], analysis_type: str) -> Dict:
-        """Create result with contract addresses and Web3 intelligence INCLUDING token age"""
+        """Create result with contract addresses and Web3 intelligence - FIXED verification data"""
         if not analysis_results or not analysis_results.get('scores'):
             return self._create_empty_result(analysis_type)
         
         scores = analysis_results['scores']
         ranked_tokens = []
         
-        # Build lookups including Web3 intelligence
+        # Build lookups with enhanced Web3 intelligence
         contract_lookup = {}
         purchase_stats = {}
         web3_intelligence = {}
@@ -1016,21 +1062,38 @@ class UnifiedDataProcessor:
         for purchase in purchases:
             token = purchase.token_bought
             
-            # Contract lookup
+            # ENHANCED: Extract Web3 intelligence more thoroughly
             if purchase.web3_analysis:
                 ca = purchase.web3_analysis.get('contract_address', '') or purchase.web3_analysis.get('ca', '')
                 if ca:
                     contract_lookup[token] = ca
                     
-                    # IMPORTANT: Store the complete Web3 intelligence data
-                    web3_intelligence[token] = purchase.web3_analysis
+                    # CRITICAL FIX: Ensure verification status is preserved
+                    web3_data = purchase.web3_analysis.copy()
                     
-                    # Log token age if available
-                    age = purchase.web3_analysis.get('token_age_hours')
-                    if age is not None:
-                        logger.info(f"Token age data available for {token}: {age:.1f} hours")
+                    # Ensure verification status is properly set
+                    if 'is_verified' not in web3_data and 'contract_verified' in web3_data:
+                        web3_data['is_verified'] = web3_data['contract_verified']
+                    
+                    # Ensure all Web3 intelligence fields are included
+                    web3_intelligence[token] = {
+                        'contract_address': ca,
+                        'ca': ca,
+                        'token_symbol': token,
+                        'network': web3_data.get('network', 'unknown'),
+                        'is_verified': bool(web3_data.get('is_verified', False)),
+                        'has_liquidity': bool(web3_data.get('has_liquidity', False)),
+                        'liquidity_usd': float(web3_data.get('liquidity_usd', 0)),
+                        'honeypot_risk': float(web3_data.get('honeypot_risk', 0)),
+                        'data_sources': web3_data.get('data_sources', []),
+                        'contract_name': web3_data.get('contract_name', ''),
+                        'compiler_version': web3_data.get('compiler_version', ''),
+                        'source': web3_data.get('source', 'unknown')
+                    }
+                    
+                    logger.info(f"🔍 {token}: Verification={web3_intelligence[token]['is_verified']}, Source={web3_intelligence[token]['source']}")
             
-            # Purchase stats
+            # Purchase stats (same as before)
             if token not in purchase_stats:
                 purchase_stats[token] = {'total_eth': 0, 'count': 0, 'wallets': set(), 'scores': []}
             
@@ -1043,13 +1106,13 @@ class UnifiedDataProcessor:
             purchase_stats[token]['wallets'].add(purchase.wallet_address)
             purchase_stats[token]['scores'].append(purchase.sophistication_score or 0)
         
-        # Create ranked results with complete Web3 data
+        # Create ranked results with ENHANCED Web3 data
         for token, score_data in scores.items():
             stats = purchase_stats.get(token, {'total_eth': 0, 'count': 1, 'wallets': set(), 'scores': [0]})
             contract_address = contract_lookup.get(token, '')
             web3_data = web3_intelligence.get(token, {})
             
-            # Token data
+            # Enhanced token data with verification status
             if analysis_type == 'sell':
                 token_data = {
                     'total_eth_received': float(stats['total_eth']),
@@ -1059,7 +1122,12 @@ class UnifiedDataProcessor:
                     'contract_address': contract_address,
                     'ca': contract_address,
                     'sell_pressure_score': score_data['total_score'],
-                    'analysis_type': 'sell'
+                    'analysis_type': 'sell',
+                    
+                    # CRITICAL: Include verification status in main data
+                    'is_verified': web3_data.get('is_verified', False),
+                    'has_liquidity': web3_data.get('has_liquidity', False),
+                    'verification_source': web3_data.get('source', 'unknown')
                 }
             else:
                 token_data = {
@@ -1070,81 +1138,61 @@ class UnifiedDataProcessor:
                     'contract_address': contract_address,
                     'ca': contract_address,
                     'alpha_score': score_data['total_score'],
-                    'analysis_type': 'buy'
+                    'analysis_type': 'buy',
+                    
+                    # CRITICAL: Include verification status in main data
+                    'is_verified': web3_data.get('is_verified', False),
+                    'has_liquidity': web3_data.get('has_liquidity', False),
+                    'verification_source': web3_data.get('source', 'unknown')
                 }
             
-            # Add Web3 intelligence - ENSURE ALL DATA IS PRESERVED
+            # Add comprehensive Web3 intelligence
             token_data.update({
                 'ai_enhanced': score_data.get('ai_enhanced', False),
                 'confidence': score_data.get('confidence', 0.75),
                 'platforms': ['DEX'],
+                
+                # ENHANCED: Complete Web3 data for notifications
                 'web3_data': {
                     'contract_address': contract_address,
                     'ca': contract_address,
                     'token_symbol': token,
                     'network': web3_data.get('network', 'unknown'),
-                    'token_age_hours': web3_data.get('token_age_hours'),
                     'is_verified': web3_data.get('is_verified', False),
                     'has_liquidity': web3_data.get('has_liquidity', False),
                     'liquidity_usd': web3_data.get('liquidity_usd', 0),
                     'honeypot_risk': web3_data.get('honeypot_risk', 0),
-                    'age_source': web3_data.get('age_source'),
+                    'contract_name': web3_data.get('contract_name', ''),
+                    'verification_source': web3_data.get('source', 'unknown'),
                     'data_sources': web3_data.get('data_sources', [])
                 }
             })
             
-            # Create AI data with Web3 intelligence - PRESERVE ALL FIELDS
+            # Create comprehensive AI data that includes all Web3 intelligence
             ai_data_with_web3 = score_data.copy()
-            ai_data_with_web3.update({
-                # Add Web3 fields directly to ai_data for easier access
-                'token_age_hours': web3_data.get('token_age_hours'),
-                'is_verified': web3_data.get('is_verified', False),
-                'has_liquidity': web3_data.get('has_liquidity', False),
-                'liquidity_usd': web3_data.get('liquidity_usd', 0),
-                'honeypot_risk': web3_data.get('honeypot_risk', 0),
-                'has_coingecko_listing': web3_data.get('has_coingecko_listing', False),
-                'smart_money_buying': web3_data.get('smart_money_buying', False),
-                'whale_accumulation': web3_data.get('whale_accumulation', False),
-                'age_source': web3_data.get('age_source'),
-                'data_sources': web3_data.get('data_sources', [])
-            })
-            
-            # Log what we're including
-            age = web3_data.get('token_age_hours')
-            if age is not None:
-                logger.info(f"Including token age in alert data for {token}: {age:.1f} hours from {web3_data.get('age_source', 'unknown')}")
-            else:
-                logger.info(f"No token age data available for {token}")
+            ai_data_with_web3.update(web3_data)
             
             ranked_tokens.append((token, token_data, score_data['total_score'], ai_data_with_web3))
+            
+            # Log verification status for debugging
+            verification_status = "VERIFIED" if web3_data.get('is_verified') else "UNVERIFIED"
+            logger.info(f"🪙 {token}: {verification_status} (source: {web3_data.get('source', 'unknown')})")
         
         # Sort by score
         ranked_tokens.sort(key=lambda x: x[2], reverse=True)
         
-        # Calculate stats
-        if analysis_type == 'sell':
-            total_eth = sum(p.amount_received for p in purchases)
-        else:
-            total_eth = sum(p.eth_spent for p in purchases)
-        
-        unique_tokens = len(set(p.token_bought for p in purchases))
-        verified_tokens = sum(1 for _, _, _, ai_data in ranked_tokens if ai_data.get('is_verified', False))
-        liquid_tokens = sum(1 for _, _, _, ai_data in ranked_tokens if ai_data.get('has_liquidity', False))
-        tokens_with_age = sum(1 for _, _, _, ai_data in ranked_tokens if ai_data.get('token_age_hours') is not None)
-        
-        result = {
+        return {
             'network': 'unknown',
             'analysis_type': analysis_type,
             'total_transactions': len(purchases),
-            'unique_tokens': unique_tokens,
-            'total_eth_value': total_eth,
+            'unique_tokens': len(set(p.token_bought for p in purchases)),
+            'total_eth_value': sum(p.amount_received if analysis_type == 'sell' else p.eth_spent for p in purchases),
             'ranked_tokens': ranked_tokens,
             'performance_metrics': {
                 **self.get_processing_stats(),
                 'web3_intelligence_stats': {
-                    'verified_tokens': verified_tokens,
-                    'liquid_tokens': liquid_tokens,
-                    'tokens_with_age_data': tokens_with_age,
+                    'verified_tokens': sum(1 for _, _, _, ai_data in ranked_tokens if ai_data.get('is_verified', False)),
+                    'liquid_tokens': sum(1 for _, _, _, ai_data in ranked_tokens if ai_data.get('has_liquidity', False)),
                     'total_analyzed': len(ranked_tokens)
                 }
             },
@@ -1153,10 +1201,6 @@ class UnifiedDataProcessor:
             'scores': scores
         }
         
-        logger.info(f"{analysis_type.upper()}: {verified_tokens} verified, {liquid_tokens} with liquidity, {tokens_with_age} with age data")
-        
-        return result
-
     def _create_empty_result(self, analysis_type: str) -> Dict:
         """Create empty result"""
         return {

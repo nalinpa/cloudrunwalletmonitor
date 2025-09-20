@@ -9,12 +9,15 @@ import aiohttp
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 
+from utils.config import Config
+
 logger = logging.getLogger(__name__)
 
 class AdvancedCryptoAI:
     """Simple AI system using only available data - no complex dependencies"""
     
     def __init__(self):
+        self.config = Config()
         try:
             self.anomaly_detector = IsolationForest(contamination=0.1, random_state=42)
             self.cluster_model = DBSCAN(eps=0.3, min_samples=3)
@@ -195,15 +198,49 @@ class AdvancedCryptoAI:
             logger.debug(f"Web3 analysis failed for {token_symbol}: {e}")
             return self._apply_heuristic_intelligence(token_symbol, network)
     
-    async def _check_contract_verification(self, session, contract_address: str, network: str) -> Dict:
-        """Simple contract verification check"""
+    async def _check_contract_verification_ai(self, session, contract_address: str, network: str) -> Dict:
+        """Enhanced Etherscan V2 contract verification for AI system"""
         try:
-            # Placeholder for contract verification
-            # You can implement Etherscan API calls here if you have the API key
-            return {'is_verified': False, 'source': 'basic_check'}
+            # Get chain ID for V2 API
+            chain_id = 1 if network.lower() == 'ethereum' else 8453 if network.lower() == 'base' else None
+            
+            if not chain_id:
+                logger.debug(f"Unsupported network for verification: {network}")
+                return {}
+            
+            url = f"{self.config.etherscan_endpoint}?chainid={chain_id}&module=contract&action=getsourcecode&address={contract_address}&apikey={self.config.etherscan_api_key}"
+
+            
+            logger.debug(f"🔍 AI V2 check: {contract_address[:10]}... on {network} (chain {chain_id})")
+            
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    
+                    if data.get('status') == '1' and data.get('result'):
+                        result = data['result'][0] if isinstance(data['result'], list) else data['result']
+                        
+                        source_code = result.get('SourceCode', '')
+                        contract_name = result.get('ContractName', '')
+                        
+                        is_verified = bool(source_code and source_code.strip() and 
+                                        source_code not in ['', '{{}}'])
+                        
+                        logger.info(f"✅ AI V2 {network.upper()}: {contract_name} verified={is_verified}")
+                        
+                        return {
+                            'is_verified': is_verified,
+                            'contract_name': contract_name,
+                            'source': f'etherscan_v2_{network}',
+                            'verification_source': f'etherscan_v2_{network}',
+                            'chain_id': chain_id
+                        }
+            
         except Exception as e:
-            return {}
-    
+            logger.debug(f"AI V2 verification failed: {e}")
+        
+        return {}
+
     async def _check_dexscreener_liquidity(self, session, contract_address: str) -> Dict:
         """Simple DexScreener liquidity check"""
         try:

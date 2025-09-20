@@ -250,9 +250,9 @@ def get_network_info(network: str) -> Dict[str, str]:
     return network_configs.get(network.lower(), network_configs['ethereum'])
 
 def format_contract_address(contract_address: str) -> str:
-    """Format contract address - SINGLE DEFINITION"""
+    """Enhanced contract address formatting with SAFE Telegram Markdown"""
     if not contract_address or len(contract_address) < 10:
-        return "❓ No contract address available"
+        return "❓ No Contract Address"
     
     # Clean the address
     clean_address = contract_address.strip().lower()
@@ -261,9 +261,10 @@ def format_contract_address(contract_address: str) -> str:
     
     # Validate length
     if len(clean_address) != 42:
-        return "❓ Invalid contract address"
-    
-    return f"`{clean_address}"
+        return "❓ Invalid Contract Address"
+
+    # Use simple text formatting instead of code blocks
+    return f"🔗 {clean_address}"
 
 def generate_action_links(token: str, contract_address: str, network: str) -> str:
     """Generate action links - SINGLE DEFINITION"""
@@ -308,33 +309,48 @@ def format_alert_message(alert: dict) -> str:
         # Try enhanced formatting first
         return format_enhanced_alert_message(alert)
     except Exception as e:
-        logger.error(f"Enhanced formatting failed: {e}")
+        logger.error(f"!!! ==== Enhanced formatting failed: {e} ==== !!!")
         # Fallback to basic formatting
         return format_basic_alert_message(alert)
 
 def format_enhanced_alert_message(alert: dict) -> str:
-    """Format enhanced alert with Web3 intelligence - NO HOLDER COUNT"""
+    """Format enhanced alert with SAFE Telegram Markdown - FIXED parsing issues"""
     data = alert.get('data', {})
     alert_type = alert.get('alert_type', 'unknown')
     token = alert.get('token', 'UNKNOWN')
     network = alert.get('network', 'ethereum')
     confidence = alert.get('confidence', 'Unknown')
     
-    # Get contract address and Web3 data
+    # Get contract address
     contract_address = data.get('contract_address', '')
     if not contract_address:
         contract_address = data.get('ca', '')
         if not contract_address and 'web3_data' in data:
             contract_address = data['web3_data'].get('contract_address', '')
     
-    # Extract Web3 intelligence from AI analysis
+    # Extract verification status safely
+    is_verified = False
+    verification_source = 'unknown'
+    
+    # Check multiple sources for verification
+    if 'is_verified' in data:
+        is_verified = bool(data['is_verified'])
+        verification_source = data.get('verification_source', 'main_data')
+    
     web3_data = data.get('web3_data', {})
+    if not is_verified and 'is_verified' in web3_data:
+        is_verified = bool(web3_data['is_verified'])
+        verification_source = web3_data.get('verification_source', web3_data.get('source', 'web3_data'))
+    
     ai_data = alert.get('ai_data', {}) if len(alert) > 3 else {}
+    if not is_verified and 'is_verified' in ai_data:
+        is_verified = bool(ai_data['is_verified'])
+        verification_source = ai_data.get('verification_source', ai_data.get('source', 'ai_data'))
     
     # Get network info
     network_info = get_network_info(network)
     
-    # Build alert header
+    # Build alert data
     if alert_type == 'new_token' or alert_type == 'buy':
         emoji = "🟢"
         alert_title = "BUY ALERT"
@@ -350,151 +366,138 @@ def format_enhanced_alert_message(alert: dict) -> str:
         wallet_count = data.get('wallet_count', data.get('unique_wallets', 0))
         tx_count = data.get('total_sells', data.get('transaction_count', 0))
 
-    # Extract token age for prominence - REMOVED HOLDER COUNT
-    token_age_hours = None
+    # SAFE verification display
+    if is_verified:
+        verification_display = f"✅ VERIFIED CONTRACT ({verification_source})"
+    else:
+        verification_display = f"⚠️ UNVERIFIED CONTRACT ({verification_source})"
     
-    # Try multiple sources for token age
-    if ai_data:
-        token_age_hours = ai_data.get('token_age_hours')
-    
-    if web3_data and token_age_hours is None:
-        token_age_hours = web3_data.get('token_age_hours')
-
-    # Format age information - REMOVED HOLDER COUNT
-    def format_token_age(hours):
-        if hours is None:
-            return "🕐 Age: Unknown"
-        
-        if hours < 1:
-            return f"🕐 Age: 🆕 {hours*60:.0f}min (BRAND NEW)"
-        elif hours < 24:
-            return f"🕐 Age: ⚡ {hours:.1f}h (FRESH)"
-        elif hours < 168:  # 1 week
-            days = hours / 24
-            return f"🕐 Age: 📅 {days:.1f}d (RECENT)"
-        elif hours < 720:  # 1 month
-            days = hours / 24
-            return f"🕐 Age: ✅ {days:.1f}d (ESTABLISHED)"
-        else:
-            days = hours / 24
-            return f"🕐 Age: 💎 {days:.0f}d (MATURE)"
-
-    # Create age display
-    age_display = format_token_age(token_age_hours)
-    
-    # Generate risk assessment based on age only - NO HOLDER COUNT
-    def get_age_risk_indicator(age_hours):
-        risk_signals = []
-        
-        if age_hours is not None and age_hours < 24:
-            risk_signals.append("VERY NEW TOKEN")
-        elif age_hours is not None and age_hours < 168:
-            risk_signals.append("NEW TOKEN")
-            
-        if len(risk_signals) >= 1:
-            return "🚨 HIGH RISK: " + " + ".join(risk_signals)
-        elif age_hours is not None and age_hours > 720:
-            return "✅ LOW RISK: Established token"
-        elif age_hours is not None and age_hours > 168:
-            return "💡 MODERATE RISK: Growing project"
-        
-        return None
-
-    risk_indicator = get_age_risk_indicator(token_age_hours)
-
-    # Build Web3 intelligence section (existing logic but streamlined) - NO HOLDER COUNT
-    web3_signals = []
-    risk_signals = []
-    
-    # Extract Web3 signals from AI data
-    if ai_data:
-        # Verification status
-        if ai_data.get('is_verified'):
-            web3_signals.append("✅ Contract Verified")
-        else:
-            risk_signals.append("⚠️ Unverified Contract")
-        
-        # Liquidity signals
-        liquidity_usd = ai_data.get('liquidity_usd', 0)
-        if ai_data.get('has_liquidity'):
-            if liquidity_usd > 100000:
-                web3_signals.append(f"💧 High Liquidity (${liquidity_usd:,.0f})")
-            elif liquidity_usd > 10000:
-                web3_signals.append(f"💧 Good Liquidity (${liquidity_usd:,.0f})")
-            else:
-                web3_signals.append("💧 Has Liquidity")
-        else:
-            risk_signals.append("🚨 No Liquidity Detected")
-        
-        # Advanced signals
-        if ai_data.get('smart_money_buying') or ai_data.get('has_smart_money'):
-            web3_signals.append("🧠 Smart Money Active")
-        
-        if ai_data.get('whale_coordination_detected'):
-            web3_signals.append("🐋 Whale Coordination")
-        
-        if ai_data.get('pump_signals_detected'):
-            web3_signals.append("🚀 Pump Signals")
-        
-        # Risk assessment
-        honeypot_risk = ai_data.get('honeypot_risk', 0)
-        if honeypot_risk > 0.7:
-            risk_signals.append(f"🍯 HIGH Honeypot Risk ({honeypot_risk:.0%})")
-        elif honeypot_risk > 0.4:
-            risk_signals.append(f"⚠️ Medium Risk ({honeypot_risk:.0%})")
-
-    # Build the complete message with PROMINENT age info - NO HOLDER COUNT
-    message_parts = [
-        f"{emoji} **{alert_title}**",
+    # Build message with SIMPLE formatting (no complex Markdown)
+    message_lines = [
+        f"{emoji} *{alert_title}*",
         "",
-        f"🪙 **Token:** `{token}`",
-        f"🌐 **Network:** {network_info['name']} ({network_info['symbol']})",
-        f"📊 **Score:** {score:.1f}",
-        f"💰 **ETH Volume:** {eth_value:.4f}",
-        f"👥 **Wallets:** {wallet_count}",
-        f"🔄 **Transactions:** {tx_count}",
-        # PROMINENT PLACEMENT: Age right in main metrics - NO HOLDER COUNT
-        age_display,
-        f"🎯 **Confidence:** {confidence}"
+        f"🪙 *Token:* {token}",
+        f"🌐 *Network:* {network_info['name']} ({network_info['symbol']})",
+        f"📊 *Score:* {score:.1f}",
+        f"💰 *ETH Volume:* {eth_value:.4f}",
+        f"👥 *Wallets:* {wallet_count}",
+        f"🔄 *Transactions:* {tx_count}",
+        f"🎯 *Confidence:* {confidence}",
+        "",
+        "*CONTRACT STATUS:*",
+        f"  {verification_display}"
     ]
 
-    # Add risk assessment if available
-    if risk_indicator:
-        message_parts.extend(["", risk_indicator])
+    # Add liquidity info
+    has_liquidity = (
+        data.get('has_liquidity') or 
+        web3_data.get('has_liquidity') or 
+        ai_data.get('has_liquidity')
+    )
+    
+    liquidity_usd = (
+        data.get('liquidity_usd') or 
+        web3_data.get('liquidity_usd') or 
+        ai_data.get('liquidity_usd') or 
+        0
+    )
+    
+    if has_liquidity and liquidity_usd > 0:
+        message_lines.append(f"  💧 *Liquidity:* ${liquidity_usd:,.0f}")
+    elif has_liquidity:
+        message_lines.append(f"  💧 Has Liquidity ✅")
+    else:
+        message_lines.append(f"  🚨 No Liquidity Detected")
 
-    # Add Web3 intelligence section (condensed) - NO HOLDER COUNT
-    if web3_signals or risk_signals:
-        message_parts.extend(["", "🔍 **Web3 Intelligence:**"])
-        
-        # Show most important signals first (limit to prevent overflow)
-        for signal in web3_signals[:3]:
-            message_parts.append(f"  {signal}")
-        
-        for risk in risk_signals[:2]:
-            message_parts.append(f"  {risk}")
+    # Add other signals (simplified)
+    signals = []
+    
+    if ai_data.get('smart_money_buying') or ai_data.get('has_smart_money'):
+        signals.append("🧠 Smart Money Active")
+    
+    if ai_data.get('whale_coordination_detected'):
+        signals.append("🐋 Whale Coordination")
+    
+    if ai_data.get('pump_signals_detected'):
+        signals.append("🚀 Pump Signals")
+    
+    # Risk assessment
+    honeypot_risk = (
+        data.get('honeypot_risk') or 
+        web3_data.get('honeypot_risk') or 
+        ai_data.get('honeypot_risk') or 
+        0
+    )
+    
+    if honeypot_risk > 0.7:
+        signals.append(f"🍯 HIGH Risk ({honeypot_risk:.0%})")
+    elif honeypot_risk > 0.4:
+        signals.append(f"⚠️ Medium Risk ({honeypot_risk:.0%})")
 
-    # Contract address section
-    message_parts.extend([
+    if signals:
+        message_lines.extend(["", "*Additional Signals:*"])
+        for signal in signals[:3]:
+            message_lines.append(f"  {signal}")
+
+    # Contract address (SAFE formatting)
+    message_lines.extend([
         "",
-        "📋 **Contract Address:**",
-        format_contract_address(contract_address)
+        "*Contract Address:*"
     ])
     
-    # Action links
-    message_parts.extend([
+    if contract_address and len(contract_address) >= 10:
+        # SAFE contract address display - no backticks
+        clean_address = contract_address.strip().lower()
+        if not clean_address.startswith('0x'):
+            clean_address = '0x' + clean_address
+        
+        short_ca = f"{clean_address[:6]}...{clean_address[-4:]}"
+        message_lines.append(f"🔗 {clean_address}")
+        message_lines.append(f"💾 Short: {short_ca}")
+    else:
+        message_lines.append("❓ No Contract Address")
+    
+    # Action links (SAFE formatting)
+    message_lines.extend([
         "",
-        "🔗 **Quick Actions:**",
-        generate_action_links(token, contract_address, network)
+        "*Quick Actions:*"
     ])
+    
+    if contract_address and len(contract_address) >= 10:
+        clean_ca = contract_address.strip().lower()
+        if not clean_ca.startswith('0x'):
+            clean_ca = '0x' + clean_ca
+        
+        # Generate safe action links
+        network_info = get_network_info(network)
+        
+        # Build links safely
+        uniswap_url = f"{network_info['uniswap_base']}{clean_ca}"
+        dexscreener_url = f"{network_info['dexscreener_base']}{clean_ca}"
+        explorer_url = f"https://{network_info['explorer']}/token/{clean_ca}"
+        twitter_url = f"https://twitter.com/search?q={clean_ca}"
+        
+        # Use simple link format
+        links = [
+            f"[🦄 Uniswap]({uniswap_url})",
+            f"[📊 Chart]({dexscreener_url})",
+            f"[🔍 Explorer]({explorer_url})",
+            f"[🐦 Search X]({twitter_url})"
+        ]
+        
+        message_lines.append(" | ".join(links))
+    else:
+        message_lines.append("❌ No contract address available")
     
     # Footer
-    message_parts.extend([
+    message_lines.extend([
         "",
         f"⏰ {datetime.now().strftime('%H:%M:%S UTC')}",
-        "🚀 Enhanced Web3 Monitoring v4.0"
+        "🚀 Enhanced Web3 Monitoring v4.1"
     ])
     
-    return "\n".join(message_parts)
+    # Join and return
+    return "\n".join(message_lines)
 
 def debug_alert_data_structure(alert: dict):
     """Debug function to show the complete alert data structure"""

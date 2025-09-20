@@ -570,29 +570,25 @@ class UnifiedDataProcessor:
         return self._session
     
     async def _check_contract_verification(self, session, contract_address: str, network: str) -> Dict:
-        """Contract verification using your V2 API config"""
+        """Simple contract verification using only Etherscan V2 API - NO HOLDER COUNT"""
         try:
-            if not contract_address or len(contract_address) != 42:
-                return {'is_verified': False, 'source': 'invalid_address'}
-            
-            # Use your config
             if not self.config.etherscan_api_key:
                 logger.debug("No Etherscan API key - returning unverified")
                 return {'is_verified': False, 'source': 'no_api_key'}
             
-            # Get chain ID for network from your config
+            # Get chain ID for network
             chain_id = self.config.chain_ids.get(network.lower())
             if not chain_id:
                 logger.debug(f"No chain ID configured for {network} - returning unverified")
                 return {'is_verified': False, 'source': 'unsupported_network'}
             
-            # Build API URL using your config
+            # Build V2 API URL
             url = f"{self.config.etherscan_endpoint}?chainid={chain_id}&module=contract&action=getsourcecode&address={contract_address}&apikey={self.config.etherscan_api_key}"
             
-            # Apply rate limiting from your config
+            # Apply rate limiting
             await asyncio.sleep(self.config.etherscan_api_rate_limit)
             
-            logger.debug(f"🔍 Contract verification: {contract_address[:10]}... on {network} (chain {chain_id})")
+            logger.debug(f"🔍 V2 API check: {contract_address[:10]}... on {network} (chain {chain_id})")
             
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=12)) as response:
                 if response.status == 200:
@@ -601,14 +597,8 @@ class UnifiedDataProcessor:
                     # Handle API errors
                     if data.get('status') == '0':
                         error_msg = data.get('message', 'Unknown error')
-                        logger.debug(f"API error for {network}: {error_msg}")
-                        
-                        if "rate limit" in error_msg.lower():
-                            return {'is_verified': False, 'source': 'rate_limited'}
-                        elif "invalid" in error_msg.lower():
-                            return {'is_verified': False, 'source': 'invalid_api_key'}
-                        else:
-                            return {'is_verified': False, 'source': 'api_error', 'error': error_msg}
+                        logger.debug(f"V2 API error for {network}: {error_msg}")
+                        return {'is_verified': False, 'source': 'api_error', 'error': error_msg}
                     
                     # Parse successful response
                     if data.get('status') == '1' and data.get('result'):
@@ -617,14 +607,11 @@ class UnifiedDataProcessor:
                         source_code = result.get('SourceCode', '')
                         contract_name = result.get('ContractName', '')
                         
-                        # Verification check
+                        # Simple verification check
                         has_source = bool(source_code and source_code.strip() and 
                                         source_code not in ['', '{{}}', 'Contract source code not verified'])
                         
                         is_verified = has_source
-                        
-                        # Get token age
-                        token_age_hours = await self._get_token_age_from_api(session, contract_address, chain_id)
                         
                         if is_verified:
                             logger.info(f"✅ {network.upper()} verified: {contract_name} ({contract_address[:10]}...)")
@@ -638,25 +625,20 @@ class UnifiedDataProcessor:
                             'optimization_used': result.get('OptimizationUsed') == '1',
                             'has_source_code': has_source,
                             'chain_id': chain_id,
-                            'token_age_hours': token_age_hours,
-                            'source': 'etherscan'
+                            'source': 'etherscan_v2'
                         }
                     else:
-                        logger.debug(f"API no result for {contract_address}")
+                        logger.debug(f"V2 API no result for {contract_address}")
                         return {'is_verified': False, 'source': 'no_result'}
                 
-                elif response.status == 403:
-                    return {'is_verified': False, 'source': 'forbidden'}
-                elif response.status == 429:
-                    return {'is_verified': False, 'source': 'rate_limited'}
                 else:
-                    logger.debug(f"API HTTP {response.status} for {network}")
+                    logger.debug(f"V2 API HTTP {response.status} for {network}")
                     return {'is_verified': False, 'source': f'http_{response.status}'}
         
         except Exception as e:
-            logger.debug(f"Contract verification exception: {e}")
+            logger.debug(f"V2 API exception: {e}")
             return {'is_verified': False, 'source': 'exception', 'error': str(e)}
-
+        
     async def _get_token_age_from_api(self, session, contract_address: str, chain_id: int) -> float:
         """Get token age using your API config"""
         try:
@@ -689,7 +671,7 @@ class UnifiedDataProcessor:
             return None
 
     async def _get_token_web3_intelligence(self, session, token_symbol: str, contract_address: str, network: str) -> Dict:
-        """FIXED: Get Web3 intelligence using your API config"""
+        """Get Web3 intelligence for a single token - NO HOLDER COUNT"""
         try:
             if not contract_address or len(contract_address) != 42:
                 return self._default_web3_intelligence(token_symbol, network)
@@ -703,16 +685,34 @@ class UnifiedDataProcessor:
                 'has_liquidity': False,
                 'liquidity_usd': 0,
                 'honeypot_risk': 0.3,
-                'data_sources': [],
-                'token_age_hours': None
+                'data_sources': []
             }
+            
+            # Batch intelligence checks - REMOVED HOLDER COUNT CHECK
+            tasks = [
+                self._check_contract_verification(session, contract_address, network),
+                self._check_dexscreener_liquidity(session, contract_address),
+                self._check_coingecko_data(session, contract_address, token_symbol)
+            ]
+            
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Process results
+            for result in results:
+                if isinstance(result, dict) and result:
+                    intelligence.update(result)
+                    if result.get('source'):
+                        intelligence['data_sources'].append(result['source'])
+            
+            # Apply heuristics
+            intelligence = self._apply_heuristic_analysis(intelligence, token_symbol)
             
             return intelligence
             
         except Exception as e:
-            logger.debug(f"Token Web3 intelligence failed for {token_symbol}: {e}")
+            logger.debug(f"Token intelligence failed for {token_symbol}: {e}")
             return self._default_web3_intelligence(token_symbol, network)
-
+    
     async def _check_dexscreener_liquidity(self, session, contract_address: str) -> Dict:
         """Enhanced DexScreener liquidity check with better error handling"""
         try:

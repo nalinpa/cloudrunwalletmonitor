@@ -313,7 +313,7 @@ def format_alert_message(alert: dict) -> str:
         return format_basic_alert_message(alert)
 
 def format_enhanced_alert_message(alert: dict) -> str:
-    """Format enhanced alert with Web3 intelligence, token age"""
+    """Format enhanced alert with Web3 intelligence - NO HOLDER COUNT"""
     data = alert.get('data', {})
     alert_type = alert.get('alert_type', 'unknown')
     token = alert.get('token', 'UNKNOWN')
@@ -350,15 +350,17 @@ def format_enhanced_alert_message(alert: dict) -> str:
         wallet_count = data.get('wallet_count', data.get('unique_wallets', 0))
         tx_count = data.get('total_sells', data.get('transaction_count', 0))
 
-    # Extract comprehensive Web3 data for prominence
+    # Extract token age for prominence - REMOVED HOLDER COUNT
     token_age_hours = None
     
-    # Try multiple sources for comprehensive data
-    for source in [ai_data, web3_data, data]:
-        if token_age_hours is None:
-            token_age_hours = source.get('token_age_hours')
+    # Try multiple sources for token age
+    if ai_data:
+        token_age_hours = ai_data.get('token_age_hours')
+    
+    if web3_data and token_age_hours is None:
+        token_age_hours = web3_data.get('token_age_hours')
 
-    # Enhanced formatting functions
+    # Format age information - REMOVED HOLDER COUNT
     def format_token_age(hours):
         if hours is None:
             return "🕐 Age: Unknown"
@@ -377,34 +379,30 @@ def format_enhanced_alert_message(alert: dict) -> str:
             days = hours / 24
             return f"🕐 Age: 💎 {days:.0f}d (MATURE)"
 
-
-    # Create displays
+    # Create age display
     age_display = format_token_age(token_age_hours)
     
-    # Generate combined risk assessment
-    def get_combined_risk_indicator(age_hours):
+    # Generate risk assessment based on age only - NO HOLDER COUNT
+    def get_age_risk_indicator(age_hours):
         risk_signals = []
         
         if age_hours is not None and age_hours < 24:
+            risk_signals.append("VERY NEW TOKEN")
+        elif age_hours is not None and age_hours < 168:
             risk_signals.append("NEW TOKEN")
             
-        if len(risk_signals) >= 3:
-            return "🚨 EXTREME RISK: " + " + ".join(risk_signals[:2]) + f" + {len(risk_signals)-2} more"
-        elif len(risk_signals) == 2:
+        if len(risk_signals) >= 1:
             return "🚨 HIGH RISK: " + " + ".join(risk_signals)
-        elif len(risk_signals) == 1:
-            return "⚠️ CAUTION: " + risk_signals[0]
-        elif all(x is not None for x in [age_hours]):
-            if age_hours > 720:
-                return "✅ LOW RISK: Mature"
-            elif age_hours > 168:
-                return "💡 MODERATE RISK: Growing project"
-
+        elif age_hours is not None and age_hours > 720:
+            return "✅ LOW RISK: Established token"
+        elif age_hours is not None and age_hours > 168:
+            return "💡 MODERATE RISK: Growing project"
+        
         return None
 
-    risk_indicator = get_combined_risk_indicator(token_age_hours)
+    risk_indicator = get_age_risk_indicator(token_age_hours)
 
-    # Build Web3 intelligence section
+    # Build Web3 intelligence section (existing logic but streamlined) - NO HOLDER COUNT
     web3_signals = []
     risk_signals = []
     
@@ -445,7 +443,7 @@ def format_enhanced_alert_message(alert: dict) -> str:
         elif honeypot_risk > 0.4:
             risk_signals.append(f"⚠️ Medium Risk ({honeypot_risk:.0%})")
 
-    # Build the complete message with PROMINENT distribution analysis
+    # Build the complete message with PROMINENT age info - NO HOLDER COUNT
     message_parts = [
         f"{emoji} **{alert_title}**",
         "",
@@ -455,19 +453,16 @@ def format_enhanced_alert_message(alert: dict) -> str:
         f"💰 **ETH Volume:** {eth_value:.4f}",
         f"👥 **Wallets:** {wallet_count}",
         f"🔄 **Transactions:** {tx_count}",
-        "",
-        # PROMINENT PLACEMENT: Age
-        "🔍 **Distribution Analysis:**",
-        f"  {age_display}",
-        "",
+        # PROMINENT PLACEMENT: Age right in main metrics - NO HOLDER COUNT
+        age_display,
         f"🎯 **Confidence:** {confidence}"
     ]
 
-    # Add combined risk assessment if available
+    # Add risk assessment if available
     if risk_indicator:
         message_parts.extend(["", risk_indicator])
 
-    # Add Web3 intelligence section (condensed)
+    # Add Web3 intelligence section (condensed) - NO HOLDER COUNT
     if web3_signals or risk_signals:
         message_parts.extend(["", "🔍 **Web3 Intelligence:**"])
         
@@ -492,15 +487,11 @@ def format_enhanced_alert_message(alert: dict) -> str:
         generate_action_links(token, contract_address, network)
     ])
     
-    # Enhanced footer with distribution stats
-    footer_stats = []
-    
-    stats_display = " | ".join(footer_stats) if footer_stats else ""
-    
+    # Footer
     message_parts.extend([
         "",
-        f"⏰ {datetime.now().strftime('%H:%M:%S UTC')}" + (f" | {stats_display}" if stats_display else ""),
-        "🚀 Enhanced Web3 Monitoring v4.1 with Distribution Analysis"
+        f"⏰ {datetime.now().strftime('%H:%M:%S UTC')}",
+        "🚀 Enhanced Web3 Monitoring v4.0"
     ])
     
     return "\n".join(message_parts)

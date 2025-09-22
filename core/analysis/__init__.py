@@ -1,4 +1,3 @@
-﻿from .buy_analyzer import CloudBuyAnalyzer
-from .sell_analyzer import CloudSellAnalyzer
+﻿from .unified_analyzer import CloudBuyAnalyzer, CloudSellAnalyzer
 
 __all__ = ['CloudBuyAnalyzer', 'CloudSellAnalyzer']

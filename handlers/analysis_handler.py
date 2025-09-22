@@ -77,12 +77,12 @@ class AnalysisHandler:
             try:
                 logger.info(f"Creating analyzer: {key}")
                 
+                from core.analysis.unified_analyzer import CloudBuyAnalyzer, CloudSellAnalyzer
+                
                 if analysis_type == 'buy':
-                    from core.analysis.buy_analyzer import CloudBuyAnalyzer
-                    analyzer = CloudBuyAnalyzer(network)
+                    analyzer = CloudBuyAnalyzer(network, self.config)
                 else:
-                    from core.analysis.sell_analyzer import CloudSellAnalyzer
-                    analyzer = CloudSellAnalyzer(network)
+                    analyzer = CloudSellAnalyzer(network, self.config)
                 
                 await analyzer.initialize()
                 self._analyzers[key] = analyzer

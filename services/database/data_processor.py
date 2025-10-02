@@ -1,5 +1,5 @@
 import pandas as pd
-import numpy as np
+import np as np
 import logging
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timedelta
@@ -8,31 +8,6 @@ import aiohttp
 
 from api.models.data_models import WalletInfo, Purchase, Transfer, TransferType
 from utils.config import Config
-
-from utils.web3_utils import (
-    extract_contract_address,
-    is_excluded_token,
-    calculate_eth_spent,
-    calculate_eth_received,
-    parse_timestamp,
-    safe_float_conversion,
-    safe_int_conversion,
-    safe_bool_conversion,
-    validate_ethereum_address,
-    apply_token_heuristics,
-    create_default_web3_intelligence,
-    extract_unique_tokens_info,
-    chunk_list
-)
-from utils.constants import (
-    EXCLUDED_TOKENS,
-    EXCLUDED_CONTRACTS,
-    SPENDING_CURRENCIES,
-    RECEIVING_CURRENCIES,
-    DEFAULTS,
-    TIME_WINDOWS,
-    API_ENDPOINTS
-)
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +18,22 @@ AdvancedCryptoAI_CLASS = None
 class UnifiedDataProcessor:
     
     def __init__(self):
-        # ✅ SIMPLIFIED: Use constants instead of duplicating
+        # Token exclusion lists
         self.config = Config()
+        self.excluded_assets = frozenset({
+            'ETH', 'WETH', 'USDC', 'USDT', 'DAI', 'BUSD', 'FRAX', 'LUSD', 'USDC.E'
+        })
         
-        # ✅ REMOVED: self.excluded_assets and self.excluded_contracts 
-        # Now using EXCLUDED_TOKENS and EXCLUDED_CONTRACTS from constants
+        self.excluded_contracts = frozenset({
+            '0xdac17f958d2ee523a2206206994597c13d831ec7',  # USDT
+            '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',  # USDC
+            '0x6b175474e89094c44da98b954eedeac495271d0f',  # DAI
+            '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',  # WETH
+            '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',  # USDC on Base
+        })
+        
+        # QUALITY THRESHOLDS
+        self.min_eth_value = 0.02  # Minimum 0.02 ETH for verified trades
         
         # Services
         self.bigquery_transfer_service = None
@@ -69,7 +55,7 @@ class UnifiedDataProcessor:
             'web3_enriched_tokens': 0
         }
         
-        logger.info("🚀 Unified Data Processor with consolidated utilities")
+        logger.info("🚀 Data Processor with Quality Filtering (min 0.02 ETH)")
     
     def set_transfer_service(self, transfer_service):
         """Set BigQuery transfer service"""
@@ -86,15 +72,12 @@ class UnifiedDataProcessor:
         try:
             logger.info("🔍 Testing AI system availability...")
             
-            # Test dependencies
             import sklearn
             import numpy as np
             import pandas as pd
             
-            # Import AI class
             from core.analysis.ai_system import AdvancedCryptoAI
             
-            # Test instantiation
             test_instance = AdvancedCryptoAI()
             
             AI_AVAILABLE = True
@@ -131,19 +114,74 @@ class UnifiedDataProcessor:
         return self.ai_engine
     
     # ============================================================================
-    # SIMPLIFIED PROCESSING - USING CONSOLIDATED UTILITIES
+    # QUALITY VERIFICATION
+    # ============================================================================
+    
+    def _is_verified_trade(self, eth_value: float, token_symbol: str, 
+                          contract_address: str, tx_hash: str) -> tuple:
+        """
+        Verify if a trade meets quality standards for storage
+        Returns: (is_valid, rejection_reason)
+        """
+        # Check 1: Minimum ETH value
+        if eth_value < self.min_eth_value:
+            return False, f"below_minimum ({eth_value:.4f} ETH < {self.min_eth_value})"
+        
+        # Check 2: Not excluded token
+        if self.is_excluded_token(token_symbol, contract_address):
+            return False, f"excluded_token ({token_symbol})"
+        
+        # Check 3: Valid transaction hash
+        if not tx_hash or len(tx_hash) != 66:
+            return False, "invalid_tx_hash"
+        
+        # Check 4: Valid contract address
+        if not contract_address or len(contract_address) != 42:
+            return False, "invalid_contract"
+        
+        # Check 5: Not dust amount
+        if eth_value < 0.00001:
+            return False, "dust_amount"
+        
+        # Check 6: Not unreasonably large
+        if eth_value > 10000:
+            return False, "unrealistic_amount"
+        
+        return True, "verified"
+    
+    def _calculate_trade_quality(self, eth_value: float) -> float:
+        """Calculate quality score for a trade (0-100)"""
+        if eth_value >= 1.0:
+            return 100.0
+        elif eth_value >= 0.5:
+            return 90.0
+        elif eth_value >= 0.2:
+            return 80.0
+        elif eth_value >= 0.1:
+            return 70.0
+        elif eth_value >= 0.05:
+            return 60.0
+        else:
+            return 50.0
+    
+    # ============================================================================
+    # PROCESSING WITH QUALITY FILTERING
     # ============================================================================
     
     async def process_transfers_to_purchases(self, wallets: List[WalletInfo], 
                                            all_transfers: Dict, network: str,
                                            store_data: bool = False) -> List[Purchase]:
-        """✅ UPDATED: Process transfers using consolidated utilities"""
+        """Process transfers with QUALITY FILTERING and optional storage"""
         purchases = []
-        all_transfer_records = []
+        verified_transfer_records = []
+        rejected_count = {"below_minimum": 0, "excluded_token": 0, "other": 0}
+        
         wallet_scores = {w.address: w.score for w in wallets}
         
-        logger.info(f"Processing {len(wallets)} wallets for BUY analysis")
-        logger.info(f"Using consolidated Web3 utilities")
+        if store_data:
+            logger.info(f"🗄️ STORAGE MODE: Verified trades will be saved (min {self.min_eth_value} ETH)")
+        else:
+            logger.info(f"📊 ANALYSIS MODE: No trade storage (store_data=False)")
         
         for wallet in wallets:
             address = wallet.address
@@ -158,24 +196,32 @@ class UnifiedDataProcessor:
                     if not asset or asset == "ETH":
                         continue
                     
-                    amount = safe_float_conversion(transfer.get("value", "0"))
+                    amount = float(transfer.get("value", "0"))
                     if amount <= 0:
                         continue
                     
-                    # ✅ USING: Consolidated utility function
-                    contract_address = extract_contract_address(transfer)
+                    contract_address = self.extract_contract_address(transfer)
                     tx_hash = transfer.get("hash", "")
                     block_num = transfer.get("blockNum", "0x0")
-                    block_number = safe_int_conversion(block_num, 16) if block_num != "0x0" else 0
+                    block_number = int(block_num, 16) if block_num != "0x0" else 0
                     
-                    # ✅ USING: Consolidated utility function
-                    eth_spent = calculate_eth_spent(outgoing, tx_hash, block_num)
+                    eth_spent = self._calculate_eth_spent(outgoing, tx_hash, block_num)
                     
-                    # ✅ USING: Consolidated utility function
-                    if is_excluded_token(asset, contract_address) or eth_spent < 0.00001:
+                    # QUALITY VERIFICATION
+                    is_valid, reason = self._is_verified_trade(
+                        eth_spent, asset, contract_address, tx_hash
+                    )
+                    
+                    if not is_valid:
+                        if "below_minimum" in reason:
+                            rejected_count["below_minimum"] += 1
+                        elif "excluded" in reason:
+                            rejected_count["excluded_token"] += 1
+                        else:
+                            rejected_count["other"] += 1
                         continue
                     
-                    # Create purchase with basic contract info
+                    # Create purchase (always created for analysis)
                     purchase = Purchase(
                         transaction_hash=tx_hash,
                         token_bought=asset,
@@ -184,26 +230,27 @@ class UnifiedDataProcessor:
                         wallet_address=address,
                         platform="DEX",
                         block_number=block_number,
-                        # ✅ USING: Consolidated utility function
-                        timestamp=parse_timestamp(transfer, block_number),
+                        timestamp=self._parse_timestamp(transfer, block_number),
                         sophistication_score=wallet_scores.get(address, 0),
                         web3_analysis={
                             "contract_address": contract_address,
                             "ca": contract_address,
                             "token_symbol": asset,
-                            "network": network
+                            "network": network,
+                            "is_verified_trade": True,
+                            "quality_score": self._calculate_trade_quality(eth_spent)
                         }
                     )
                     
                     purchases.append(purchase)
                     
-                    # Storage record
+                    # CONDITIONAL STORAGE: Only if store_data=True
                     if store_data:
                         transfer_record = Transfer(
                             wallet_address=address,
                             token_address=contract_address,
                             transfer_type=TransferType.BUY,
-                            timestamp=parse_timestamp(transfer, block_number),
+                            timestamp=self._parse_timestamp(transfer, block_number),
                             cost_in_eth=eth_spent,
                             transaction_hash=tx_hash,
                             block_number=block_number,
@@ -213,33 +260,53 @@ class UnifiedDataProcessor:
                             platform="DEX",
                             wallet_sophistication_score=wallet_scores.get(address, 0)
                         )
-                        all_transfer_records.append(transfer_record)
+                        verified_transfer_records.append(transfer_record)
                 
                 except Exception as e:
                     logger.debug(f"Error processing transfer: {e}")
                     continue
         
-        # Store transfers
-        if store_data and self.bigquery_transfer_service and all_transfer_records:
-            try:
-                stored_count = await self.bigquery_transfer_service.store_transfers_batch(all_transfer_records)
-                self._last_stored_count = stored_count
-                logger.info(f"✅ Stored {stored_count} transfer records")
-            except Exception as e:
-                logger.error(f"❌ Failed to store transfers: {e}")
+        # Log filtering results
+        total_rejected = sum(rejected_count.values())
+        logger.info(f"✅ VERIFIED: {len(purchases)} purchases (min {self.min_eth_value} ETH)")
+        logger.info(f"❌ REJECTED: {total_rejected} ({rejected_count['below_minimum']} below min, "
+                   f"{rejected_count['excluded_token']} excluded, {rejected_count['other']} other)")
         
-        logger.info(f"📊 Created {len(purchases)} purchases for AI analysis")
+        # ACTUAL STORAGE
+        if store_data and self.bigquery_transfer_service and verified_transfer_records:
+            try:
+                logger.info(f"💾 Storing {len(verified_transfer_records)} verified trades to BigQuery...")
+                stored_count = await self.bigquery_transfer_service.store_transfers_batch(
+                    verified_transfer_records
+                )
+                self._last_stored_count = stored_count
+                logger.info(f"✅ Stored {stored_count} verified trades successfully")
+            except Exception as e:
+                logger.error(f"❌ Failed to store verified trades: {e}")
+                self._last_stored_count = 0
+        elif store_data:
+            logger.warning("⚠️ Storage requested but no verified trades to store")
+            self._last_stored_count = 0
+        else:
+            logger.info(f"📊 Analysis mode: {len(purchases)} purchases processed, none stored")
+            self._last_stored_count = 0
+        
         return purchases
     
     async def process_transfers_to_sells(self, wallets: List[WalletInfo], 
                                        all_transfers: Dict, network: str,
                                        store_data: bool = False) -> List[Purchase]:
-        """✅ UPDATED: Process sells using consolidated utilities"""
+        """Process sells with QUALITY FILTERING and optional storage"""
         sells = []
-        all_transfer_records = []
+        verified_transfer_records = []
+        rejected_count = {"below_minimum": 0, "excluded_token": 0, "other": 0}
+        
         wallet_scores = {w.address: w.score for w in wallets}
         
-        logger.info(f"Processing {len(wallets)} wallets for SELL analysis")
+        if store_data:
+            logger.info(f"🗄️ STORAGE MODE: Verified sell trades will be saved (min {self.min_eth_value} ETH)")
+        else:
+            logger.info(f"📊 ANALYSIS MODE: No sell trade storage (store_data=False)")
         
         for wallet in wallets:
             address = wallet.address
@@ -254,22 +321,32 @@ class UnifiedDataProcessor:
                     if not asset or asset == "ETH":
                         continue
                     
-                    amount_sold = safe_float_conversion(transfer.get("value", "0"))
+                    amount_sold = float(transfer.get("value", "0"))
                     if amount_sold <= 0:
                         continue
                     
-                    # ✅ USING: Consolidated utility functions
-                    contract_address = extract_contract_address(transfer)
+                    contract_address = self.extract_contract_address(transfer)
                     tx_hash = transfer.get("hash", "")
                     block_num = transfer.get("blockNum", "0x0")
-                    block_number = safe_int_conversion(block_num, 16) if block_num != "0x0" else 0
+                    block_number = int(block_num, 16) if block_num != "0x0" else 0
                     
-                    eth_received = calculate_eth_received(incoming, tx_hash, block_num)
+                    eth_received = self._calculate_eth_received(incoming, tx_hash, block_num)
                     
-                    if is_excluded_token(asset, contract_address) or eth_received < 0.000001:
+                    # QUALITY VERIFICATION
+                    is_valid, reason = self._is_verified_trade(
+                        eth_received, asset, contract_address, tx_hash
+                    )
+                    
+                    if not is_valid:
+                        if "below_minimum" in reason:
+                            rejected_count["below_minimum"] += 1
+                        elif "excluded" in reason:
+                            rejected_count["excluded_token"] += 1
+                        else:
+                            rejected_count["other"] += 1
                         continue
                     
-                    # Create sell record
+                    # Create verified sell
                     sell = Purchase(
                         transaction_hash=tx_hash,
                         token_bought=asset,
@@ -278,7 +355,7 @@ class UnifiedDataProcessor:
                         wallet_address=address,
                         platform="Transfer",
                         block_number=block_number,
-                        timestamp=parse_timestamp(transfer, block_number),
+                        timestamp=self._parse_timestamp(transfer, block_number),
                         sophistication_score=wallet_scores.get(address, 0),
                         web3_analysis={
                             "contract_address": contract_address,
@@ -286,18 +363,21 @@ class UnifiedDataProcessor:
                             "amount_sold": amount_sold,
                             "is_sell": True,
                             "token_symbol": asset,
-                            "network": network
+                            "network": network,
+                            "is_verified_trade": True,
+                            "quality_score": self._calculate_trade_quality(eth_received)
                         }
                     )
                     
                     sells.append(sell)
                     
+                    # CONDITIONAL STORAGE
                     if store_data:
                         transfer_record = Transfer(
                             wallet_address=address,
                             token_address=contract_address,
                             transfer_type=TransferType.SELL,
-                            timestamp=parse_timestamp(transfer, block_number),
+                            timestamp=self._parse_timestamp(transfer, block_number),
                             cost_in_eth=eth_received,
                             transaction_hash=tx_hash,
                             block_number=block_number,
@@ -307,21 +387,37 @@ class UnifiedDataProcessor:
                             platform="Transfer",
                             wallet_sophistication_score=wallet_scores.get(address, 0)
                         )
-                        all_transfer_records.append(transfer_record)
+                        verified_transfer_records.append(transfer_record)
                 
                 except Exception as e:
                     logger.debug(f"Error processing sell: {e}")
                     continue
         
-        if store_data and self.bigquery_transfer_service and all_transfer_records:
-            try:
-                stored_count = await self.bigquery_transfer_service.store_transfers_batch(all_transfer_records)
-                self._last_stored_count = stored_count
-                logger.info(f"✅ Stored {stored_count} sell records")
-            except Exception as e:
-                logger.error(f"❌ Failed to store sells: {e}")
+        # Log results
+        total_rejected = sum(rejected_count.values())
+        logger.info(f"✅ VERIFIED: {len(sells)} sells (min {self.min_eth_value} ETH)")
+        logger.info(f"❌ REJECTED: {total_rejected} ({rejected_count['below_minimum']} below min, "
+                   f"{rejected_count['excluded_token']} excluded, {rejected_count['other']} other)")
         
-        logger.info(f"📊 Created {len(sells)} sells for AI analysis")
+        # ACTUAL STORAGE
+        if store_data and self.bigquery_transfer_service and verified_transfer_records:
+            try:
+                logger.info(f"💾 Storing {len(verified_transfer_records)} verified sell records to BigQuery...")
+                stored_count = await self.bigquery_transfer_service.store_transfers_batch(
+                    verified_transfer_records
+                )
+                self._last_stored_count = stored_count
+                logger.info(f"✅ Stored {stored_count} verified sell records successfully")
+            except Exception as e:
+                logger.error(f"❌ Failed to store verified sells: {e}")
+                self._last_stored_count = 0
+        elif store_data:
+            logger.warning("⚠️ Storage requested but no verified sell trades to store")
+            self._last_stored_count = 0
+        else:
+            logger.info(f"📊 Analysis mode: {len(sells)} sells processed, none stored")
+            self._last_stored_count = 0
+        
         return sells
     
     # ============================================================================
@@ -335,13 +431,12 @@ class UnifiedDataProcessor:
         
         logger.info(f"🔍 AI Analysis with INTEGRATED Web3 intelligence: {len(purchases)} {analysis_type} transactions")
         
-        # Step 1: Try AI analysis with integrated Web3 intelligence
+        # Try AI analysis with integrated Web3 intelligence
         ai_engine = self._get_ai_engine()
         if ai_engine:
             try:
                 logger.info("🤖 Running AI analysis with INTEGRATED Web3 intelligence...")
                 
-                # ENHANCED: AI will now handle Web3 intelligence internally
                 result = await ai_engine.complete_ai_analysis_with_web3(purchases, analysis_type)
                 
                 if result.get('enhanced'):
@@ -357,7 +452,7 @@ class UnifiedDataProcessor:
             except Exception as e:
                 logger.error(f"AI analysis with Web3 failed: {e}")
         
-        # Step 2: Fallback to enhanced basic analysis with Web3 intelligence
+        # Fallback to enhanced basic analysis
         logger.info("📊 Using enhanced basic analysis with Web3 intelligence...")
         basic_result = await self._analyze_purchases_with_web3_batch(purchases, analysis_type)
         return self._create_result_with_contracts(basic_result, purchases, analysis_type)
@@ -367,15 +462,29 @@ class UnifiedDataProcessor:
         try:
             logger.info(f"🔍 Processing {len(purchases)} purchases with batch Web3 intelligence")
             
-            # ✅ USING: Consolidated utility function
-            unique_tokens = extract_unique_tokens_info(purchases)
+            # Extract unique tokens
+            unique_tokens = {}
+            for purchase in purchases:
+                token = purchase.token_bought
+                if token not in unique_tokens:
+                    contract_address = ""
+                    if purchase.web3_analysis:
+                        contract_address = purchase.web3_analysis.get('contract_address', '') or purchase.web3_analysis.get('ca', '')
+                    
+                    unique_tokens[token] = {
+                        'contract_address': contract_address,
+                        'network': purchase.web3_analysis.get('network', 'ethereum') if purchase.web3_analysis else 'ethereum',
+                        'purchases': []
+                    }
+                
+                unique_tokens[token]['purchases'].append(purchase)
             
             logger.info(f"📊 Found {len(unique_tokens)} unique tokens for Web3 analysis")
             
-            # Step 2: Batch process Web3 intelligence for unique tokens
+            # Batch process Web3 intelligence
             web3_intelligence = await self._batch_process_web3_intelligence(unique_tokens)
             
-            # Step 3: Apply Web3 intelligence to all purchases
+            # Apply Web3 intelligence to all purchases
             for token, intelligence in web3_intelligence.items():
                 for purchase in unique_tokens[token]['purchases']:
                     if purchase.web3_analysis:
@@ -383,7 +492,7 @@ class UnifiedDataProcessor:
                     else:
                         purchase.web3_analysis = intelligence
             
-            # Step 4: Create enhanced DataFrame with Web3 data
+            # Create enhanced DataFrame with Web3 data
             data = []
             for purchase in purchases:
                 eth_value = purchase.amount_received if analysis_type == 'sell' else purchase.eth_spent
@@ -394,10 +503,10 @@ class UnifiedDataProcessor:
                     'eth_value': eth_value,
                     'wallet': purchase.wallet_address,
                     'score': purchase.sophistication_score or 0,
-                    'is_verified': safe_bool_conversion(web3_data.get('is_verified')),
-                    'has_liquidity': safe_bool_conversion(web3_data.get('has_liquidity')),
-                    'liquidity_usd': safe_float_conversion(web3_data.get('liquidity_usd')),
-                    'honeypot_risk': safe_float_conversion(web3_data.get('honeypot_risk'), DEFAULTS['honeypot_risk']),
+                    'is_verified': web3_data.get('is_verified', False),
+                    'has_liquidity': web3_data.get('has_liquidity', False),
+                    'liquidity_usd': web3_data.get('liquidity_usd', 0),
+                    'honeypot_risk': web3_data.get('honeypot_risk', 0.3),
                     'contract_address': web3_data.get('contract_address', '')
                 })
             
@@ -406,7 +515,7 @@ class UnifiedDataProcessor:
             
             df = pd.DataFrame(data)
             
-            # Step 5: Calculate scores with Web3 intelligence bonuses
+            # Calculate scores with Web3 intelligence bonuses
             scores = {}
             for token in df['token'].unique():
                 token_df = df[df['token'] == token]
@@ -417,12 +526,10 @@ class UnifiedDataProcessor:
                 avg_score = token_df['score'].mean()
                 
                 if analysis_type == 'sell':
-                    # Sell scoring
                     volume_score = min(total_eth * 100, 60)
                     diversity_score = min(unique_wallets * 10, 25)
                     quality_score = min((avg_score / 100) * 15, 15)
                 else:
-                    # Buy scoring  
                     volume_score = min(total_eth * 50, 50)
                     diversity_score = min(unique_wallets * 8, 30)
                     quality_score = min((avg_score / 100) * 20, 20)
@@ -435,15 +542,15 @@ class UnifiedDataProcessor:
                 avg_risk = token_df['honeypot_risk'].mean()
                 
                 if is_verified:
-                    web3_bonus += 15  # Big bonus for verified contracts
+                    web3_bonus += 15
                     logger.debug(f"✅ {token}: +15 points for verified contract")
                 
                 if has_liquidity:
-                    web3_bonus += 10  # Bonus for liquidity
+                    web3_bonus += 10
                     logger.debug(f"💧 {token}: +10 points for liquidity")
                 
                 if max_liquidity > 50000:
-                    web3_bonus += 5   # Extra bonus for high liquidity
+                    web3_bonus += 5
                     logger.debug(f"💰 {token}: +5 points for high liquidity (${max_liquidity:,.0f})")
                 
                 # Risk penalty
@@ -486,233 +593,170 @@ class UnifiedDataProcessor:
         except Exception as e:
             logger.error(f"Enhanced basic analysis failed: {e}")
             return {'scores': {}, 'analysis_type': analysis_type, 'enhanced': False}
+        
+# ============================================================================
+    # UTILITY METHODS
+    # ============================================================================
     
-    async def _batch_process_web3_intelligence(self, unique_tokens: Dict) -> Dict:
-        """Batch process Web3 intelligence for unique tokens"""
-        web3_results = {}
-        session = await self._get_session()
-        
-        logger.info(f"🔍 Batch processing Web3 intelligence for {len(unique_tokens)} tokens")
-        
-        # ✅ USING: Consolidated utility function
-        for batch in chunk_list(list(unique_tokens.items()), 5):
-            # Process batch concurrently
-            tasks = []
-            for token, token_data in batch:
-                task = self._get_token_web3_intelligence(
-                    session, 
-                    token, 
-                    token_data['contract_address'], 
-                    token_data['network']
-                )
-                tasks.append(task)
+    def is_excluded_token(self, asset: str, contract_address: str = None) -> bool:
+        """Check if token should be excluded"""
+        if not asset:
+            return True
             
-            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Collect results
-            for (token, token_data), result in zip(batch, batch_results):
-                if isinstance(result, dict):
-                    web3_results[token] = result
-                else:
-                    logger.debug(f"Web3 intelligence failed for {token}: {result}")
-                    # ✅ USING: Consolidated utility function
-                    web3_results[token] = create_default_web3_intelligence(token, token_data['network'])
-            
-            # Rate limiting between batches
-            await asyncio.sleep(0.5)
+        asset_upper = asset.upper()
         
-        return web3_results
+        if asset_upper in self.excluded_assets:
+            return True
+        
+        if contract_address and contract_address.lower() in self.excluded_contracts:
+            return True
+        
+        if len(asset) <= 6 and any(stable in asset_upper for stable in ['USD', 'DAI']):
+            return True
+        
+        return False
     
-    async def _get_token_web3_intelligence(self, session, token_symbol: str, contract_address: str, network: str) -> Dict:
-        """Get Web3 intelligence for a single token"""
+    def extract_contract_address(self, transfer: Dict) -> str:
+        """Extract contract address from transfer"""
+        contract_address = ""
+        
+        # Method 1: rawContract.address
+        raw_contract = transfer.get("rawContract", {})
+        if isinstance(raw_contract, dict) and raw_contract.get("address"):
+            contract_address = raw_contract["address"]
+        
+        # Method 2: contractAddress field
+        elif transfer.get("contractAddress"):
+            contract_address = transfer["contractAddress"]
+        
+        # Method 3: 'to' address for ERC20
+        elif transfer.get("to"):
+            to_address = transfer["to"]
+            if to_address != "0x0000000000000000000000000000000000000000":
+                contract_address = to_address
+        
+        # Clean and validate
+        if contract_address:
+            contract_address = contract_address.strip().lower()
+            if not contract_address.startswith('0x'):
+                contract_address = '0x' + contract_address
+            
+            if len(contract_address) == 42:
+                return contract_address
+        
+        return ""
+    
+    def _calculate_eth_spent(self, outgoing_transfers: List[Dict], 
+                       target_tx: str, target_block: str) -> float:
+        """Calculate ETH spent using centralized conversion rates"""
+        if not outgoing_transfers:
+            return 0.0
+        
+        # Get spending rates from config
+        spending_rates = {}
+        supported_tokens = self.config.get_all_supported_tokens()
+        
+        for token in supported_tokens:
+            rate = self.config.get_spending_rate(token)
+            if rate > 0:
+                spending_rates[token] = rate
+        
+        total_eth = 0.0
+        
+        # Exact transaction match
+        for transfer in outgoing_transfers:
+            if transfer.get("hash") == target_tx:
+                asset = transfer.get("asset", "")
+                if asset in spending_rates:
+                    try:
+                        amount = float(transfer.get("value", "0"))
+                        eth_equivalent = amount * spending_rates[asset]
+                        total_eth += eth_equivalent
+                    except (ValueError, TypeError):
+                        continue
+        
+        if total_eth > 0:
+            return total_eth
+        
+        # Block-based matching
+        for transfer in outgoing_transfers:
+            if transfer.get("blockNum") == target_block:
+                asset = transfer.get("asset", "")
+                if asset in spending_rates:
+                    try:
+                        amount = float(transfer.get("value", "0"))
+                        eth_equivalent = amount * spending_rates[asset]
+                        if 0.0001 <= eth_equivalent <= 50.0:
+                            total_eth += eth_equivalent
+                    except (ValueError, TypeError):
+                        continue
+        
+        return total_eth
+
+    def _calculate_eth_received(self, incoming_transfers: List[Dict], 
+                            target_tx: str, target_block: str) -> float:
+        """Calculate ETH received for sells using centralized conversion rates"""
+        if not incoming_transfers:
+            return 0.0
+        
+        # Get receiving rates from config
+        receiving_rates = {}
+        supported_tokens = self.config.get_all_supported_tokens()
+        
+        for token in supported_tokens:
+            rate = self.config.get_receiving_rate(token)
+            if rate > 0:
+                receiving_rates[token] = rate
+        
+        total_eth = 0.0
+        
+        # Exact transaction match
+        for transfer in incoming_transfers:
+            if transfer.get("hash") == target_tx:
+                asset = transfer.get("asset", "")
+                if asset in receiving_rates:
+                    try:
+                        amount = float(transfer.get("value", "0"))
+                        eth_equivalent = amount * receiving_rates[asset]
+                        total_eth += eth_equivalent
+                    except (ValueError, TypeError):
+                        continue
+        
+        if total_eth > 0:
+            return total_eth
+        
+        # Block proximity matching
         try:
-            # ✅ USING: Consolidated utility function
-            if not validate_ethereum_address(contract_address):
-                return apply_token_heuristics(token_symbol, network)
-            
-            intelligence = {
-                'contract_address': contract_address.lower(),
-                'ca': contract_address.lower(),
-                'token_symbol': token_symbol,
-                'network': network,
-                'is_verified': False,
-                'has_liquidity': False,
-                'liquidity_usd': 0,
-                'honeypot_risk': DEFAULTS['honeypot_risk'],
-                'data_sources': []
-            }
-            
-            # Batch intelligence checks
-            tasks = [
-                self._check_contract_verification(session, contract_address, network),
-                self._check_dexscreener_liquidity(session, contract_address),
-                self._check_coingecko_data(session, contract_address, token_symbol)
-            ]
-            
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Process results
-            for result in results:
-                if isinstance(result, dict) and result:
-                    intelligence.update(result)
-                    if result.get('source'):
-                        intelligence['data_sources'].append(result['source'])
-            
-            # ✅ USING: Apply consolidated heuristics if no API data
-            if not intelligence['data_sources']:
-                heuristic_data = apply_token_heuristics(token_symbol, network)
-                intelligence.update(heuristic_data)
-            
-            return intelligence
-            
-        except Exception as e:
-            logger.debug(f"Token intelligence failed for {token_symbol}: {e}")
-            return apply_token_heuristics(token_symbol, network)
-    
-    async def _get_session(self):
-        """Get HTTP session"""
-        if not self._session:
-            timeout = aiohttp.ClientTimeout(total=10, connect=5)
-            self._session = aiohttp.ClientSession(timeout=timeout)
-        return self._session
-    
-    async def _check_contract_verification(self, session, contract_address: str, network: str) -> Dict:
-        """Simple contract verification using Etherscan V2 API"""
-        try:
-            if not self.config.etherscan_api_key:
-                logger.debug("No Etherscan API key - returning unverified")
-                return {'is_verified': False, 'source': 'no_api_key'}
-            
-            # Get chain ID for network
-            chain_id = self.config.chain_ids.get(network.lower())
-            if not chain_id:
-                logger.debug(f"No chain ID configured for {network} - returning unverified")
-                return {'is_verified': False, 'source': 'unsupported_network'}
-            
-            # ✅ USING: API endpoint from constants
-            url = f"{API_ENDPOINTS['etherscan_v2']}?chainid={chain_id}&module=contract&action=getsourcecode&address={contract_address}&apikey={self.config.etherscan_api_key}"
-            
-            # Apply rate limiting
-            await asyncio.sleep(self.config.etherscan_api_rate_limit)
-            
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=12)) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    
-                    if data.get('status') == '1' and data.get('result'):
-                        result = data['result'][0] if isinstance(data['result'], list) else data['result']
-                        
-                        source_code = result.get('SourceCode', '')
-                        contract_name = result.get('ContractName', '')
-                        
-                        # Simple verification check
-                        has_source = bool(source_code and source_code.strip() and 
-                                        source_code not in ['', '{{}}', 'Contract source code not verified'])
-                        
-                        is_verified = has_source
-                        
-                        return {
-                            'is_verified': is_verified,
-                            'contract_name': contract_name or 'Unknown',
-                            'compiler_version': result.get('CompilerVersion', ''),
-                            'has_source_code': has_source,
-                            'chain_id': chain_id,
-                            'source': 'etherscan_v2'
-                        }
-                    else:
-                        return {'is_verified': False, 'source': 'no_result'}
-                else:
-                    return {'is_verified': False, 'source': f'http_{response.status}'}
+            target_block_num = int(target_block, 16) if target_block.startswith('0x') else int(target_block)
+        except (ValueError, TypeError):
+            return 0.0
         
-        except Exception as e:
-            logger.debug(f"V2 API exception: {e}")
-            return {'is_verified': False, 'source': 'exception', 'error': str(e)}
-    
-    async def _check_dexscreener_liquidity(self, session, contract_address: str) -> Dict:
-        """Enhanced DexScreener liquidity check"""
-        try:
-            # ✅ USING: API endpoint from constants
-            url = f"{API_ENDPOINTS['dexscreener_tokens']}{contract_address}"
-            
-            await asyncio.sleep(0.1)
-            
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    pairs = data.get('pairs', [])
-                    
-                    if pairs:
-                        # Filter out pairs with very low liquidity
-                        valid_pairs = [p for p in pairs if safe_float_conversion(p.get('liquidity', {}).get('usd', 0)) > 500]
-                        
-                        if valid_pairs:
-                            # Get the pair with highest liquidity
-                            best_pair = max(valid_pairs, key=lambda x: safe_float_conversion(x.get('liquidity', {}).get('usd', 0)))
-                            liquidity_usd = safe_float_conversion(best_pair.get('liquidity', {}).get('usd', 0))
-                            
-                            return {
-                                'has_liquidity': liquidity_usd > 1000,
-                                'liquidity_usd': liquidity_usd,
-                                'volume_24h_usd': safe_float_conversion(best_pair.get('volume', {}).get('h24', 0)),
-                                'price_usd': safe_float_conversion(best_pair.get('priceUsd', 0)),
-                                'dex_name': best_pair.get('dexId', 'Unknown'),
-                                'pair_address': best_pair.get('pairAddress', ''),
-                                'source': 'dexscreener'
-                            }
-                        else:
-                            return {
-                                'has_liquidity': False,
-                                'liquidity_usd': 0,
-                                'reason': 'liquidity_too_low',
-                                'source': 'dexscreener'
-                            }
-                    else:
-                        return {
-                            'has_liquidity': False,
-                            'liquidity_usd': 0,
-                            'reason': 'no_pairs_found',
-                            'source': 'dexscreener'
-                        }
-                
-                elif response.status == 429:
-                    logger.warning("⚠️ DexScreener rate limit")
-                    return {'rate_limited': True, 'source': 'dexscreener'}
-                
-                else:
-                    logger.debug(f"DexScreener API failed: HTTP {response.status}")
-                    return {}
+        proximity_values = []
+        for transfer in incoming_transfers:
+            transfer_block = transfer.get("blockNum", "0x0")
+            try:
+                transfer_block_num = int(transfer_block, 16) if transfer_block.startswith('0x') else int(transfer_block)
+                if abs(transfer_block_num - target_block_num) <= 10:
+                    asset = transfer.get("asset", "")
+                    if asset in receiving_rates:
+                        amount = float(transfer.get("value", "0"))
+                        eth_equivalent = amount * receiving_rates[asset]
+                        if 0.00001 <= eth_equivalent <= 100.0:
+                            proximity_values.append(eth_equivalent)
+            except (ValueError, TypeError):
+                continue
         
-        except asyncio.TimeoutError:
-            logger.debug(f"DexScreener timeout for {contract_address}")
-            return {}
-        except Exception as e:
-            logger.debug(f"DexScreener check failed: {e}")
+        return sum(proximity_values) if proximity_values else 0.0
+
+    def _parse_timestamp(self, transfer: Dict, block_number: int = None) -> datetime:
+        """Parse timestamp from transfer"""
+        if 'metadata' in transfer and 'blockTimestamp' in transfer['metadata']:
+            try:
+                return datetime.fromisoformat(transfer['metadata']['blockTimestamp'].replace('Z', '+00:00'))
+            except:
+                pass
         
-        return {}
-    
-    async def _check_coingecko_data(self, session, contract_address: str, token_symbol: str) -> Dict:
-        """Check CoinGecko data"""
-        try:
-            # ✅ USING: API endpoint from constants
-            url = f"{API_ENDPOINTS['coingecko_contract']}{contract_address}"
-            
-            async with session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    market_data = data.get('market_data', {})
-                    
-                    if market_data:
-                        return {
-                            'price_usd': safe_float_conversion(market_data.get('current_price', {}).get('usd', 0)),
-                            'volume_24h': safe_float_conversion(market_data.get('total_volume', {}).get('usd', 0)),
-                            'has_coingecko_listing': True,
-                            'source': 'coingecko'
-                        }
-        
-        except Exception as e:
-            logger.debug(f"CoinGecko check failed: {e}")
-        
-        return {}
+        return datetime.utcnow()
     
     def _create_result_with_contracts(self, analysis_results: Dict, purchases: List[Purchase], analysis_type: str) -> Dict:
         """Create result with contract addresses and Web3 intelligence"""
@@ -730,14 +774,12 @@ class UnifiedDataProcessor:
         for purchase in purchases:
             token = purchase.token_bought
             
-            # Contract lookup
             if purchase.web3_analysis:
                 ca = purchase.web3_analysis.get('contract_address', '') or purchase.web3_analysis.get('ca', '')
                 if ca:
                     contract_lookup[token] = ca
                     web3_intelligence[token] = purchase.web3_analysis
             
-            # Purchase stats
             if token not in purchase_stats:
                 purchase_stats[token] = {'total_eth': 0, 'count': 0, 'wallets': set(), 'scores': []}
             
@@ -785,16 +827,10 @@ class UnifiedDataProcessor:
                 'ai_enhanced': score_data.get('ai_enhanced', False),
                 'confidence': score_data.get('confidence', 0.75),
                 'platforms': ['DEX'],
-                'web3_data': {
-                    'contract_address': contract_address,
-                    'ca': contract_address,
-                    'token_symbol': token,
-                    'network': web3_data.get('network', 'unknown'),
-                    **web3_data
-                }
+                'web3_data': web3_data
             })
             
-            # Create AI data with Web3 intelligence
+            # Create AI data
             ai_data_with_web3 = score_data.copy()
             ai_data_with_web3.update(web3_data)
             
@@ -810,8 +846,6 @@ class UnifiedDataProcessor:
             total_eth = sum(p.eth_spent for p in purchases)
         
         unique_tokens = len(set(p.token_bought for p in purchases))
-        verified_tokens = sum(1 for _, _, _, ai_data in ranked_tokens if ai_data.get('is_verified', False))
-        liquid_tokens = sum(1 for _, _, _, ai_data in ranked_tokens if ai_data.get('has_liquidity', False))
         
         result = {
             'network': 'unknown',
@@ -822,21 +856,14 @@ class UnifiedDataProcessor:
             'ranked_tokens': ranked_tokens,
             'performance_metrics': {
                 **self.get_processing_stats(),
-                'web3_intelligence_stats': {
-                    'verified_tokens': verified_tokens,
-                    'liquid_tokens': liquid_tokens,
-                    'total_analyzed': len(ranked_tokens)
-                }
             },
             'enhanced': analysis_results.get('enhanced', False),
             'web3_enhanced': True,
             'scores': scores
         }
         
-        logger.info(f"✅ {analysis_type.upper()}: {verified_tokens} verified, {liquid_tokens} with liquidity")
-        
         return result
-    
+
     def _create_empty_result(self, analysis_type: str) -> Dict:
         """Create empty result"""
         return {
@@ -856,13 +883,13 @@ class UnifiedDataProcessor:
         """Get processing statistics"""
         return {
             'transfers_processed': self.stats.get('transfers_processed', 0),
-            'transfers_stored': self.stats.get('transfers_stored', 0),
+            'transfers_stored': self._last_stored_count,
             'last_stored_count': self._last_stored_count,
             'ai_enhanced_tokens': self.stats.get('ai_enhanced_tokens', 0),
             'web3_enriched_tokens': self.stats.get('web3_enriched_tokens', 0),
             'ai_available': self._ai_enabled if self._ai_enabled is not None else False,
-            'web3_intelligence_mode': 'batch_integrated',
-            'processing_mode': 'unified_batch_web3'
+            'processing_mode': 'quality_filtered_conditional_storage',
+            'min_eth_threshold': self.min_eth_value
         }
     
     async def validate_data_quality(self, purchases: List[Purchase]) -> Dict:
@@ -913,7 +940,7 @@ class UnifiedDataProcessor:
         
         logger.info(f"=== {analysis_type.upper()} ANALYSIS SUMMARY ===")
         logger.info(f"Total transactions: {len(purchases)}")
-        logger.info(f"Web3 intelligence: BATCH processed during AI analysis")
+        logger.info(f"Verified trades (≥{self.min_eth_value} ETH): {len(purchases)}")
         logger.info("=" * (len(f"{analysis_type.upper()} ANALYSIS SUMMARY") + 6))
     
     async def cleanup(self):
@@ -926,3 +953,27 @@ class UnifiedDataProcessor:
             logger.info("Data processor cleanup completed")
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
+    
+    # Placeholder methods for Web3 intelligence (simplified for now)
+    async def _batch_process_web3_intelligence(self, unique_tokens: Dict) -> Dict:
+        """Batch process Web3 intelligence - simplified version"""
+        web3_results = {}
+        for token, token_info in unique_tokens.items():
+            web3_results[token] = {
+                'contract_address': token_info['contract_address'],
+                'ca': token_info['contract_address'],
+                'token_symbol': token,
+                'network': token_info['network'],
+                'is_verified': False,
+                'has_liquidity': False,
+                'liquidity_usd': 0,
+                'honeypot_risk': 0.3
+            }
+        return web3_results
+    
+    async def _get_session(self):
+        """Get HTTP session"""
+        if not self._session:
+            timeout = aiohttp.ClientTimeout(total=10, connect=5)
+            self._session = aiohttp.ClientSession(timeout=timeout)
+        return self._session

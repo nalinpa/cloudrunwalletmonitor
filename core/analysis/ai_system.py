@@ -11,10 +11,22 @@ from datetime import datetime, timedelta
 from utils.config import Config
 from core.data.models import AnalysisResult, Purchase
 
+# Import consolidated web3 utilities
+from utils.web3_utils import (
+    extract_unique_tokens_info,
+    create_default_web3_intelligence,
+    apply_token_heuristics,
+    safe_float_conversion,
+    safe_int_conversion,
+    safe_bool_conversion,
+    get_web3_service,
+    cleanup_web3_service
+)
+
 logger = logging.getLogger(__name__)
 
 class AdvancedCryptoAI:
-    """Enhanced AI system with integrated batch Web3 intelligence processing"""
+    """Enhanced AI system with integrated batch Web3 intelligence processing - Using web3_utils"""
     
     def __init__(self):
         self.config = Config()
@@ -46,36 +58,34 @@ class AdvancedCryptoAI:
             'risk_factor': 0.05
         }
         
-        # Web3 intelligence session
-        self._web3_session = None
-        
-        logger.info("Enhanced AI initialized with batch Web3 intelligence")
+        logger.info("Enhanced AI initialized with web3_utils integration")
     
     # ============================================================================
-    # NEW METHOD: AI Analysis with Integrated Web3 Intelligence
+    # MAIN METHOD: AI Analysis with Integrated Web3 Intelligence
     # ============================================================================
     
     async def complete_ai_analysis_with_web3(self, purchases: List, analysis_type: str) -> Dict:
         """
-        ENHANCED: AI analysis with integrated batch Web3 intelligence processing
+        ENHANCED: AI analysis with integrated batch Web3 intelligence processing using web3_utils
         """
         try:
-            logger.info(f"AI Analysis with INTEGRATED Web3 intelligence: {len(purchases)} {analysis_type}")
+            logger.info(f"AI Analysis with web3_utils integration: {len(purchases)} {analysis_type}")
             
             if not purchases:
                 return self._create_empty_result(analysis_type)
             
-            # Step 1: Extract unique tokens for batch Web3 processing
-            unique_tokens = self._extract_unique_tokens_info(purchases)
+            # Step 1: Extract unique tokens using web3_utils
+            unique_tokens = extract_unique_tokens_info(purchases)
             logger.info(f"Found {len(unique_tokens)} unique tokens for batch Web3 analysis")
             
-            # Step 2: Batch process Web3 intelligence with error handling
+            # Step 2: Batch process Web3 intelligence using web3_utils
             try:
-                web3_intelligence = await self._batch_process_web3_intelligence(unique_tokens)
+                web3_service = get_web3_service(self.config)
+                web3_intelligence = await web3_service.batch_process_tokens(unique_tokens)
             except Exception as e:
-                logger.warning(f"Web3 intelligence processing failed: {e}, using defaults")
-                web3_intelligence = {token: self._default_web3_intelligence(token, 'ethereum') 
-                                for token in unique_tokens.keys()}
+                logger.warning(f"Web3 intelligence processing failed: {e}, using heuristics")
+                web3_intelligence = {token: apply_token_heuristics(token, token_info['network']) 
+                                   for token, token_info in unique_tokens.items()}
             
             # Step 3: Apply Web3 intelligence to all purchases
             self._apply_web3_intelligence_to_purchases(purchases, web3_intelligence)
@@ -105,491 +115,8 @@ class AdvancedCryptoAI:
             logger.error(f"Traceback: {traceback.format_exc()}")
             return self._create_empty_result(analysis_type)
     
-    def _extract_unique_tokens_info(self, purchases: List) -> Dict:
-        """Extract unique token information for batch processing"""
-        unique_tokens = {}
-        
-        for purchase in purchases:
-            token = purchase.token_bought
-            if token not in unique_tokens:
-                # Extract basic info for Web3 analysis
-                contract_address = ""
-                network = "ethereum"  # Default
-                
-                if purchase.web3_analysis:
-                    contract_address = purchase.web3_analysis.get('contract_address', '') or purchase.web3_analysis.get('ca', '')
-                    network = purchase.web3_analysis.get('network', 'ethereum')
-                
-                unique_tokens[token] = {
-                    'contract_address': contract_address,
-                    'network': network,
-                    'token_symbol': token,
-                    'purchase_count': 0,
-                    'total_eth_value': 0
-                }
-            
-            # Aggregate stats
-            unique_tokens[token]['purchase_count'] += 1
-            if hasattr(purchase, 'eth_spent'):
-                unique_tokens[token]['total_eth_value'] += purchase.eth_spent
-            elif hasattr(purchase, 'amount_received'):
-                unique_tokens[token]['total_eth_value'] += purchase.amount_received
-        
-        return unique_tokens
-    
-    async def _batch_process_web3_intelligence(self, unique_tokens: Dict) -> Dict:
-        """Batch process Web3 intelligence for unique tokens"""
-        web3_results = {}
-        session = await self._get_web3_session()
-        
-        logger.info(f"Batch processing Web3 intelligence for {len(unique_tokens)} tokens")
-        
-        # Process in small batches to avoid overwhelming APIs
-        batch_size = 3  # Conservative batch size
-        token_items = list(unique_tokens.items())
-        
-        for i in range(0, len(token_items), batch_size):
-            batch = token_items[i:i + batch_size]
-            
-            # Process batch concurrently
-            tasks = []
-            for token, token_info in batch:
-                task = self._analyze_single_token_web3(session, token, token_info)
-                tasks.append(task)
-            
-            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Collect results
-            for (token, token_info), result in zip(batch, batch_results):
-                if isinstance(result, dict) and result:
-                    web3_results[token] = result
-                    logger.info(f"{token}: Verified={result.get('is_verified')}, Liquidity=${result.get('liquidity_usd', 0):,.0f}")
-                else:
-                    logger.debug(f"Web3 intelligence failed for {token}: {result}")
-                    web3_results[token] = self._default_web3_intelligence(token, token_info['network'])
-            
-            # Rate limiting between batches
-            if i + batch_size < len(token_items):
-                await asyncio.sleep(0.8)  # 800ms between batches
-        
-        successful_count = sum(1 for result in web3_results.values() if result.get('data_sources'))
-        logger.info(f"Web3 intelligence: {successful_count}/{len(unique_tokens)} tokens enriched with API data")
-        
-        return web3_results
-    
-    async def _analyze_single_token_web3(self, session, token_symbol: str, token_info: Dict) -> Dict:
-        """Analyze single token Web3 intelligence"""
-        try:
-            contract_address = token_info['contract_address']
-            network = token_info['network']
-            
-            if not contract_address or len(contract_address) != 42:
-                return self._apply_heuristic_intelligence(token_symbol, network, token_info)
-            
-            intelligence = {
-                'contract_address': contract_address.lower(),
-                'ca': contract_address.lower(),
-                'token_symbol': token_symbol,
-                'network': network,
-                'is_verified': False,
-                'has_liquidity': False,
-                'liquidity_usd': 0,
-                'honeypot_risk': 0.3,
-                'data_sources': [],
-                'smart_money_buying': False,
-                'whale_accumulation': False
-            }
-            
-            tasks = [
-                self._check_contract_verification_ai(session, contract_address, network),
-                self._check_dexscreener_liquidity_ai(session, contract_address),
-                self._check_coingecko_data_ai(session, contract_address, token_symbol)
-            ]
-            
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Process results
-            for i, result in enumerate(results):
-                if isinstance(result, dict) and result:
-                    intelligence.update(result)
-                    source = result.get('source') or result.get('data_source')
-                    if source:
-                        intelligence['data_sources'].append(source)
-                else:
-                    logger.warning(f"Task {i} failed: {result}")
-            
-            return intelligence
-            
-        except Exception as e:
-            logger.debug(f"Single token Web3 analysis failed for {token_symbol}: {e}")
-            return self._apply_heuristic_intelligence(token_symbol, network, token_info)
-
-    async def _get_token_age_from_dexscreener(self, session, contract_address: str) -> Dict:
-        """Get token age from DexScreener pair creation data"""
-        try:
-            url = f"https://api.dexscreener.com/latest/dex/tokens/{contract_address}"
-            
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    pairs = data.get('pairs', [])
-                    
-                    if pairs:
-                        oldest_timestamp = None
-                        
-                        for pair in pairs:
-                            created_at = pair.get('pairCreatedAt')
-                            if created_at:
-                                try:
-                                    # Handle millisecond timestamps
-                                    if isinstance(created_at, (int, float)):
-                                        if created_at > 1e12:  # Milliseconds
-                                            timestamp = created_at / 1000
-                                        else:  # Seconds
-                                            timestamp = created_at
-                                        
-                                        if oldest_timestamp is None or timestamp < oldest_timestamp:
-                                            oldest_timestamp = timestamp
-                                            
-                                except Exception as e:
-                                    logger.debug(f"Error parsing DexScreener timestamp: {e}")
-                                    continue
-                        
-                        if oldest_timestamp:
-                            import time
-                            age_hours = (time.time() - oldest_timestamp) / 3600
-                            
-                            return {
-                                'token_age_hours': age_hours,
-                                'age_source': 'dexscreener',
-                                'source': 'dexscreener_age'
-                            }
-            
-            return {}
-            
-        except Exception as e:
-            logger.debug(f"DexScreener age check failed: {e}")
-            return {}
-
-    async def _get_etherscan_token_age(self, session, contract_address: str, network: str) -> Dict:
-        """Get token age from Etherscan contract creation"""
-        try:
-            if not hasattr(self.config, 'etherscan_api_key') or not self.config.etherscan_api_key:
-                return {}
-            
-            # Only support Ethereum and Base for now
-            if network.lower() not in ['ethereum', 'base']:
-                return {}
-            
-            # Get chain ID
-            chain_id = getattr(self.config, 'chain_ids', {}).get(network.lower())
-            if not chain_id:
-                chain_id = 1 if network.lower() == 'ethereum' else 8453
-            
-            # Use Etherscan V2 API for contract creation
-            endpoint = getattr(self.config, 'etherscan_endpoint', 'https://api.etherscan.io/v2/api')
-            url = f"{endpoint}?chainid={chain_id}&module=contract&action=getcontractcreation&contractaddresses={contract_address}&apikey={self.config.etherscan_api_key}"
-            
-            # Rate limiting
-            await asyncio.sleep(0.2)
-            
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    
-                    if data.get('status') == '1' and data.get('result'):
-                        result = data['result'][0] if isinstance(data['result'], list) else data['result']
-                        tx_hash = result.get('txHash')
-                        
-                        if tx_hash:
-                            # Get transaction details for block timestamp
-                            tx_url = f"{endpoint}?chainid={chain_id}&module=proxy&action=eth_getTransactionByHash&txhash={tx_hash}&apikey={self.config.etherscan_api_key}"
-                            
-                            await asyncio.sleep(0.2)
-                            
-                            async with session.get(tx_url, timeout=aiohttp.ClientTimeout(total=10)) as tx_response:
-                                if tx_response.status == 200:
-                                    tx_data = await tx_response.json()
-                                    
-                                    if tx_data.get('result'):
-                                        block_number = tx_data['result'].get('blockNumber')
-                                        
-                                        if block_number:
-                                            # Get block timestamp
-                                            block_url = f"{endpoint}?chainid={chain_id}&module=proxy&action=eth_getBlockByNumber&tag={block_number}&boolean=false&apikey={self.config.etherscan_api_key}"
-                                            
-                                            await asyncio.sleep(0.2)
-                                            
-                                            async with session.get(block_url, timeout=aiohttp.ClientTimeout(total=10)) as block_response:
-                                                if block_response.status == 200:
-                                                    block_data = await block_response.json()
-                                                    
-                                                    if block_data.get('result'):
-                                                        timestamp_hex = block_data['result'].get('timestamp')
-                                                        
-                                                        if timestamp_hex:
-                                                            import time
-                                                            timestamp = int(timestamp_hex, 16)
-                                                            age_hours = (time.time() - timestamp) / 3600
-                                                            
-                                                            return {
-                                                                'token_age_hours': age_hours,
-                                                                'age_source': 'etherscan',
-                                                                'creation_tx': tx_hash,
-                                                                'source': 'etherscan_age'
-                                                            }
-            
-            return {}
-            
-        except Exception as e:
-            logger.debug(f"Etherscan age check failed: {e}")
-            return {}
-
-    async def _check_contract_verification_ai(self, session, contract_address: str, network: str) -> Dict:
-        """Enhanced contract verification with token age calculation"""
-        try:
-            from utils.config import Config
-            config = Config()
-            
-            if not config.etherscan_api_key:
-                logger.debug("No Etherscan API key - returning unverified")
-                return {'is_verified': False, 'source': 'no_api_key'}
-            
-            # Get chain ID for network from your config
-            chain_id = config.chain_ids.get(network.lower())
-            if not chain_id:
-                logger.debug(f"No chain ID configured for {network} - returning unverified")
-                return {'is_verified': False, 'source': 'unsupported_network'}
-            
-            # Build API URL using your config
-            url = f"{config.etherscan_endpoint}?chainid={chain_id}&module=contract&action=getsourcecode&address={contract_address}&apikey={config.etherscan_api_key}"
-            
-            # Apply rate limiting from your config
-            await asyncio.sleep(config.etherscan_api_rate_limit)
-            
-            logger.debug(f"API check: {contract_address[:10]}... on {network} (chain {chain_id})")
-            
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=12)) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    
-                    # Handle API errors
-                    if data.get('status') == '0':
-                        error_msg = data.get('message', 'Unknown error')
-                        logger.debug(f"API error for {network}: {error_msg}")
-                        return {'is_verified': False, 'source': 'api_error', 'error': error_msg}
-                    
-                    # Parse successful response
-                    if data.get('status') == '1' and data.get('result'):
-                        result = data['result'][0] if isinstance(data['result'], list) else data['result']
-                        
-                        source_code = result.get('SourceCode', '')
-                        contract_name = result.get('ContractName', '')
-                        
-                        # Simple verification check
-                        has_source = bool(source_code and source_code.strip() and 
-                                        source_code not in ['', '{{}}', 'Contract source code not verified'])
-                        
-                        is_verified = has_source
-                        
-                        # Get token age
-                        token_age_hours = await self._get_token_age(session, contract_address, chain_id, config)
-                        
-                        if is_verified:
-                            logger.info(f"{network.upper()} verified: {contract_name} ({contract_address[:10]}...)")
-                        else:
-                            logger.info(f"{network.upper()} unverified: ({contract_address[:10]}...)")
-                        
-                        return {
-                            'is_verified': is_verified,
-                            'contract_name': contract_name or 'Unknown',
-                            'compiler_version': result.get('CompilerVersion', ''),
-                            'optimization_used': result.get('OptimizationUsed') == '1',
-                            'has_source_code': has_source,
-                            'chain_id': chain_id,
-                            'token_age_hours': token_age_hours,
-                            'source': 'etherscan'
-                        }
-                    else:
-                        logger.debug(f"API no result for {contract_address}")
-                        return {'is_verified': False, 'source': 'no_result'}
-                
-                else:
-                    logger.debug(f"API HTTP {response.status} for {network}")
-                    return {'is_verified': False, 'source': f'http_{response.status}'}
-        
-        except Exception as e:
-            logger.debug(f"API exception: {e}")
-            return {'is_verified': False, 'source': 'exception', 'error': str(e)}
-
-    async def _get_token_age(self, session, contract_address: str, chain_id: int, config) -> float:
-        """Get token age using API for contract creation"""
-        try:
-            # Use V2 API to get first transaction (contract creation)
-            creation_url = f"{config.etherscan_endpoint}?chainid={chain_id}&module=account&action=txlist&address={contract_address}&startblock=0&endblock=99999999&page=1&offset=1&sort=asc&apikey={config.etherscan_api_key}"
-            
-            # Apply rate limiting
-            await asyncio.sleep(config.etherscan_api_rate_limit)
-            
-            async with session.get(creation_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get('status') == '1' and data.get('result'):
-                        transactions = data.get('result', [])
-                        if transactions:
-                            first_tx = transactions[0]
-                            creation_timestamp = int(first_tx.get('timeStamp', 0))
-                            
-                            if creation_timestamp > 0:
-                                age_seconds = datetime.now().timestamp() - creation_timestamp
-                                token_age_hours = age_seconds / 3600
-                                
-                                logger.debug(f"Token age: {token_age_hours:.1f} hours ({token_age_hours/24:.1f} days)")
-                                return token_age_hours
-            
-            return None
-            
-        except Exception as e:
-            logger.debug(f"Token age calculation failed: {e}")
-            return None
-    
-    async def _check_dexscreener_liquidity_ai(self, session, contract_address: str) -> Dict:
-        """Check DexScreener liquidity - optimized for AI analysis"""
-        try:
-            url = f"https://api.dexscreener.com/latest/dex/tokens/{contract_address}"
-            
-            async with session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    pairs = data.get('pairs', [])
-                    
-                    if pairs:
-                        # Find best liquidity pair
-                        valid_pairs = [p for p in pairs if p.get('liquidity', {}).get('usd', 0) > 500]
-                        
-                        if valid_pairs:
-                            best_pair = max(valid_pairs, key=lambda x: float(x.get('liquidity', {}).get('usd', 0)))
-                            liquidity_usd = float(best_pair.get('liquidity', {}).get('usd', 0))
-                            
-                            return {
-                                'has_liquidity': liquidity_usd > 1000,
-                                'liquidity_usd': liquidity_usd,
-                                'price_usd': best_pair.get('priceUsd'),
-                                'volume_24h': float(best_pair.get('volume', {}).get('h24', 0)),
-                                'dex_name': best_pair.get('dexId', 'Unknown'),
-                                'source': 'dexscreener'
-                            }
-        
-        except Exception as e:
-            logger.debug(f"DexScreener check failed: {e}")
-        
-        return {}
-    
-    async def _check_coingecko_data_ai(self, session, contract_address: str, token_symbol: str) -> Dict:
-        """Check CoinGecko data - optimized for AI analysis"""
-        try:
-            url = f"https://api.coingecko.com/api/v3/coins/ethereum/contract/{contract_address}"
-            
-            async with session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    market_data = data.get('market_data', {})
-                    
-                    if market_data:
-                        return {
-                            'price_usd': market_data.get('current_price', {}).get('usd', 0),
-                            'market_cap': market_data.get('market_cap', {}).get('usd', 0),
-                            'volume_24h': market_data.get('total_volume', {}).get('usd', 0),
-                            'has_coingecko_listing': True,
-                            'source': 'coingecko'
-                        }
-        
-        except Exception as e:
-            logger.debug(f"CoinGecko check failed: {e}")
-        
-        return {}
-    
-    def _apply_heuristic_intelligence(self, token_symbol: str, network: str, token_info: Dict) -> Dict:
-        """Apply heuristic intelligence when APIs fail"""
-        symbol_upper = token_symbol.upper()
-        
-        # Base intelligence structure
-        intelligence = {
-            'contract_address': token_info.get('contract_address', ''),
-            'ca': token_info.get('contract_address', ''),
-            'token_symbol': token_symbol,
-            'network': network,
-            'is_verified': False,
-            'has_liquidity': False,
-            'liquidity_usd': 0,
-            'honeypot_risk': 0.4,
-            'data_sources': ['heuristic'],
-            'smart_money_buying': False,
-            'whale_accumulation': False
-        }
-        
-        # Apply heuristics based on token characteristics
-        
-        # Major tokens
-        if symbol_upper in ['WETH', 'USDC', 'USDT', 'DAI', 'ETH']:
-            intelligence.update({
-                'is_verified': True,
-                'has_liquidity': True,
-                'honeypot_risk': 0.0,
-                'heuristic_classification': 'major_token'
-            })
-        
-        # DeFi tokens  
-        elif symbol_upper in ['UNI', 'AAVE', 'COMP', 'MKR', 'SNX', 'SUSHI', 'CRV']:
-            intelligence.update({
-                'is_verified': True,
-                'has_liquidity': True,
-                'honeypot_risk': 0.1,
-                'heuristic_classification': 'defi_token'
-            })
-        
-        # Popular meme tokens
-        elif symbol_upper in ['PEPE', 'SHIB', 'DOGE', 'FLOKI', 'WIF', 'BONK']:
-            intelligence.update({
-                'is_verified': True,
-                'has_liquidity': True,
-                'honeypot_risk': 0.2,
-                'heuristic_classification': 'meme_token'
-            })
-        
-        # Base/L2 ecosystem tokens
-        elif symbol_upper in ['AERO', 'ZORA'] and network == 'base':
-            intelligence.update({
-                'is_verified': True,
-                'has_liquidity': True,
-                'honeypot_risk': 0.1,
-                'heuristic_classification': 'l2_token'
-            })
-        
-        # High-volume tokens (likely legitimate)
-        elif token_info.get('total_eth_value', 0) > 5.0:
-            intelligence.update({
-                'is_verified': True,
-                'has_liquidity': True,
-                'honeypot_risk': 0.2,
-                'heuristic_classification': 'high_volume'
-            })
-        
-        # Default for unknown tokens
-        else:
-            intelligence.update({
-                'is_verified': False,
-                'has_liquidity': False,
-                'honeypot_risk': 0.5,
-                'heuristic_classification': 'unknown'
-            })
-        
-        logger.debug(f"Heuristic: {token_symbol} → Verified={intelligence['is_verified']}, Liquidity={intelligence['has_liquidity']}")
-        
-        return intelligence
-    
     def _apply_web3_intelligence_to_purchases(self, purchases: List, web3_intelligence: Dict):
-        """Apply Web3 intelligence to all purchases"""
+        """Apply Web3 intelligence to all purchases using web3_utils data"""
         for purchase in purchases:
             token = purchase.token_bought
             if token in web3_intelligence:
@@ -612,7 +139,7 @@ class AdvancedCryptoAI:
                 else:
                     purchase.web3_analysis = intelligence.copy()
                 
-                # Ensure critical fields are properly stored
+                # Ensure critical fields are properly stored using web3_utils safe conversions
                 for field, field_type in [
                     ('token_age_hours', float),
                     ('is_verified', bool),
@@ -622,8 +149,13 @@ class AdvancedCryptoAI:
                 ]:
                     if field in intelligence and intelligence[field] is not None:
                         try:
-                            purchase.web3_analysis[field] = field_type(intelligence[field])
-                        except (ValueError, TypeError) as e:
+                            if field_type == float:
+                                purchase.web3_analysis[field] = safe_float_conversion(intelligence[field])
+                            elif field_type == bool:
+                                purchase.web3_analysis[field] = safe_bool_conversion(intelligence[field])
+                            elif field_type == int:
+                                purchase.web3_analysis[field] = safe_int_conversion(intelligence[field])
+                        except Exception as e:
                             logger.error(f"Error converting {field} for {token}: {e}")
                 
                 logger.info(f"Web3 intelligence applied to {token}: {len(purchase.web3_analysis)} fields")
@@ -652,56 +184,54 @@ class AdvancedCryptoAI:
             return self._create_empty_result(analysis_type)
     
     def _create_enhanced_dataframe_with_web3(self, purchases: List) -> pd.DataFrame:
-        """Create enhanced DataFrame with Web3 intelligence data"""
+        """Create enhanced DataFrame with Web3 intelligence data using web3_utils safe conversions"""
         data = []
         
         for purchase in purchases:
             try:
                 timestamp = getattr(purchase, 'timestamp', datetime.now())
-                eth_value = getattr(purchase, 'eth_spent', getattr(purchase, 'amount_received', 0))
-                wallet_score = getattr(purchase, 'sophistication_score', 0) or 0
+                eth_value = safe_float_conversion(getattr(purchase, 'eth_spent', getattr(purchase, 'amount_received', 0)))
+                wallet_score = safe_float_conversion(getattr(purchase, 'sophistication_score', 0))
                 
-                # Extract Web3 intelligence with safe defaults
+                # Extract Web3 intelligence with safe defaults using web3_utils
                 web3_data = getattr(purchase, 'web3_analysis', {}) or {}
                 
-                # Safe extraction of Web3 fields with defaults
-                is_verified = web3_data.get('is_verified', False)
-                has_liquidity = web3_data.get('has_liquidity', False)
-                liquidity_usd = web3_data.get('liquidity_usd', 0)
-                honeypot_risk = web3_data.get('honeypot_risk', 0.3)
+                # Safe extraction of Web3 fields with defaults using web3_utils functions
+                is_verified = safe_bool_conversion(web3_data.get('is_verified', False))
+                has_liquidity = safe_bool_conversion(web3_data.get('has_liquidity', False))
+                liquidity_usd = safe_float_conversion(web3_data.get('liquidity_usd', 0))
+                honeypot_risk = safe_float_conversion(web3_data.get('honeypot_risk', 0.3))
                 
                 # Safe token age extraction
-                token_age_hours = web3_data.get('token_age_hours', 999999)  # Default to old token
-                if token_age_hours is None:
-                    token_age_hours = 999999
+                token_age_hours = safe_float_conversion(web3_data.get('token_age_hours'), 999999)  # Default to old token
                 
                 # Safe smart money extraction with proper defaults
-                smart_money_buying = web3_data.get('smart_money_buying', False)
-                whale_accumulation = web3_data.get('whale_accumulation', False)
+                smart_money_buying = safe_bool_conversion(web3_data.get('smart_money_buying', False))
+                whale_accumulation = safe_bool_conversion(web3_data.get('whale_accumulation', False))
                 
                 # Core data with Web3 enhancements
                 row = {
                     # Basic data
                     'token': purchase.token_bought,
-                    'eth_value': float(eth_value),
-                    'amount': float(purchase.amount_received),
+                    'eth_value': eth_value,
+                    'amount': safe_float_conversion(purchase.amount_received),
                     'wallet': purchase.wallet_address,
-                    'wallet_score': float(wallet_score),
+                    'wallet_score': wallet_score,
                     'timestamp': timestamp,
                     'tx_hash': purchase.transaction_hash,
                     'hour': timestamp.hour,
                     'unix_time': timestamp.timestamp(),
                     
                     # Web3 intelligence with SAFE defaults
-                    'is_verified': bool(is_verified),
-                    'has_liquidity': bool(has_liquidity),
-                    'liquidity_usd': float(liquidity_usd),
-                    'honeypot_risk': float(honeypot_risk),
-                    'smart_money_buying': bool(smart_money_buying),
-                    'whale_accumulation': bool(whale_accumulation),
-                    'has_coingecko_listing': bool(web3_data.get('has_coingecko_listing', False)),
+                    'is_verified': is_verified,
+                    'has_liquidity': has_liquidity,
+                    'liquidity_usd': liquidity_usd,
+                    'honeypot_risk': honeypot_risk,
+                    'smart_money_buying': smart_money_buying,
+                    'whale_accumulation': whale_accumulation,
+                    'has_coingecko_listing': safe_bool_conversion(web3_data.get('has_coingecko_listing', False)),
                     'data_sources_count': len(web3_data.get('data_sources', [])),                    
-                    'token_age_hours': float(token_age_hours)
+                    'token_age_hours': token_age_hours
                 }
                 
                 data.append(row)
@@ -837,38 +367,6 @@ class AdvancedCryptoAI:
         
         return enhanced_scores
     
-    async def _get_web3_session(self):
-        """Get HTTP session for Web3 API calls"""
-        if not self._web3_session:
-            timeout = aiohttp.ClientTimeout(total=15, connect=5)
-            headers = {
-                'User-Agent': 'CryptoAnalysis-AI/1.0',
-                'Accept': 'application/json'
-            }
-            self._web3_session = aiohttp.ClientSession(
-                timeout=timeout,
-                headers=headers,
-                connector=aiohttp.TCPConnector(limit=8)
-            )
-        return self._web3_session
-    
-    def _default_web3_intelligence(self, token_symbol: str, network: str) -> Dict:
-        """Default Web3 intelligence when everything fails"""
-        return {
-            'contract_address': '',
-            'ca': '',
-            'token_symbol': token_symbol,
-            'network': network,
-            'is_verified': False,
-            'has_liquidity': False,
-            'liquidity_usd': 0,
-            'honeypot_risk': 0.4,
-            'smart_money_buying': False,
-            'whale_accumulation': False,
-            'data_sources': [],
-            'error': 'no_data_available'
-        }
-    
     # ============================================================================
     # CORE AI ANALYSIS METHODS
     # ============================================================================
@@ -903,38 +401,38 @@ class AdvancedCryptoAI:
             return self._create_empty_result(analysis_type)
     
     def _create_enhanced_dataframe(self, purchases: List) -> pd.DataFrame:
-        """Create enhanced DataFrame - basic version"""
+        """Create enhanced DataFrame - basic version using web3_utils safe conversions"""
         data = []
         
         for purchase in purchases:
             try:
                 timestamp = getattr(purchase, 'timestamp', datetime.now())
-                eth_value = getattr(purchase, 'eth_spent', getattr(purchase, 'amount_received', 0))
-                wallet_score = getattr(purchase, 'sophistication_score', 0) or 0
+                eth_value = safe_float_conversion(getattr(purchase, 'eth_spent', getattr(purchase, 'amount_received', 0)))
+                wallet_score = safe_float_conversion(getattr(purchase, 'sophistication_score', 0))
                 
                 # Extract Web3 data efficiently
                 web3_data = getattr(purchase, 'web3_analysis', {}) or {}
                 
-                # Core data with Web3 enhancements
+                # Core data with Web3 enhancements using web3_utils safe conversions
                 row = {
                     # Basic data
                     'token': purchase.token_bought,
-                    'eth_value': float(eth_value),
-                    'amount': float(purchase.amount_received),
+                    'eth_value': eth_value,
+                    'amount': safe_float_conversion(purchase.amount_received),
                     'wallet': purchase.wallet_address,
-                    'wallet_score': float(wallet_score),
+                    'wallet_score': wallet_score,
                     'timestamp': timestamp,
                     'tx_hash': purchase.transaction_hash,
                     'hour': timestamp.hour,
                     'unix_time': timestamp.timestamp(),
                     
                     # Web3 data (with defaults)
-                    'token_age_hours': web3_data.get('token_age_hours', 999999),
-                    'is_verified': web3_data.get('is_verified', False),
-                    'honeypot_risk': web3_data.get('honeypot_risk', 0),
-                    'smart_money_buying': web3_data.get('smart_money_buying', False),
-                    'whale_accumulation': web3_data.get('whale_accumulation', False),
-                    'has_liquidity': web3_data.get('has_liquidity', False)
+                    'token_age_hours': safe_float_conversion(web3_data.get('token_age_hours'), 999999),
+                    'is_verified': safe_bool_conversion(web3_data.get('is_verified', False)),
+                    'honeypot_risk': safe_float_conversion(web3_data.get('honeypot_risk', 0)),
+                    'smart_money_buying': safe_bool_conversion(web3_data.get('smart_money_buying', False)),
+                    'whale_accumulation': safe_bool_conversion(web3_data.get('whale_accumulation', False)),
+                    'has_liquidity': safe_bool_conversion(web3_data.get('has_liquidity', False))
                 }
                 
                 data.append(row)
@@ -1225,33 +723,33 @@ class AdvancedCryptoAI:
             return {'detected': False, 'anomaly_ratio': 0}
     
     def _create_enhanced_scores(self, analyses: Dict, df: pd.DataFrame) -> Dict:
-        """Create enhanced scores - streamlined approach"""
+        """Create enhanced scores - streamlined approach using web3_utils safe conversions"""
         enhanced_scores = {}
         
         # Group by token for scoring
         for token, token_df in df.groupby('token'):
             try:
-                # Basic metrics
-                total_eth = token_df['eth_value'].sum()
-                unique_wallets = token_df['wallet'].nunique()
-                avg_score = token_df['wallet_score'].mean()
+                # Basic metrics using safe conversions
+                total_eth = safe_float_conversion(token_df['eth_value'].sum())
+                unique_wallets = safe_int_conversion(token_df['wallet'].nunique())
+                avg_score = safe_float_conversion(token_df['wallet_score'].mean())
                 
                 # Component scores
                 volume_score = min(total_eth * 40, 50)
                 diversity_score = min(unique_wallets * 8, 30)
                 quality_score = min((avg_score / 200) * 20, 20)
                 
-                # Web3 enhancements
+                # Web3 enhancements using safe conversions
                 web3_bonus = 0
-                if token_df['is_verified'].any():
+                if safe_bool_conversion(token_df['is_verified'].any()):
                     web3_bonus += 5
-                if token_df['has_liquidity'].any():
+                if safe_bool_conversion(token_df['has_liquidity'].any()):
                     web3_bonus += 5
-                if token_df['has_smart_money'].any():
+                if safe_bool_conversion(token_df['has_smart_money'].any()):
                     web3_bonus += 10
                 
-                # Risk penalty
-                avg_honeypot_risk = token_df['honeypot_risk'].mean()
+                # Risk penalty using safe conversion
+                avg_honeypot_risk = safe_float_conversion(token_df['honeypot_risk'].mean())
                 risk_penalty = avg_honeypot_risk * 15
                 
                 # AI multiplier
@@ -1276,9 +774,9 @@ class AdvancedCryptoAI:
                     'ai_enhanced': True,
                     'confidence': min(0.9, 0.6 + (ai_multiplier - 1) * 0.2),
                     'honeypot_risk': avg_honeypot_risk,
-                    'is_verified': token_df['is_verified'].any(),
-                    'has_liquidity': token_df['has_liquidity'].any(),
-                    'has_smart_money': token_df['has_smart_money'].any()
+                    'is_verified': safe_bool_conversion(token_df['is_verified'].any()),
+                    'has_liquidity': safe_bool_conversion(token_df['has_liquidity'].any()),
+                    'has_smart_money': safe_bool_conversion(token_df['has_smart_money'].any())
                 }
                 
             except Exception as e:
@@ -1329,8 +827,108 @@ class AdvancedCryptoAI:
             'error': 'No data to analyze'
         }
     
+    # ============================================================================
+    # FALLBACK BASIC AI ANALYSIS (when enhanced fails)
+    # ============================================================================
+    
+    async def _run_basic_ai_analysis(self, purchases: List, analysis_type: str) -> Dict:
+        """Fallback basic analysis using web3_utils heuristics"""
+        try:
+            logger.info(f"Running basic AI analysis with web3_utils heuristics")
+            
+            # Create basic DataFrame
+            df = self._create_enhanced_dataframe(purchases)
+            if df.empty:
+                return self._create_empty_result(analysis_type)
+            
+            # Basic scoring using web3_utils safe conversions
+            scores = {}
+            for token in df['token'].unique():
+                token_df = df[df['token'] == token]
+                
+                # Basic metrics using safe conversions
+                total_eth = safe_float_conversion(token_df['eth_value'].sum())
+                unique_wallets = safe_int_conversion(token_df['wallet'].nunique())
+                avg_score = safe_float_conversion(token_df['wallet_score'].mean())
+                
+                # Simple scoring
+                volume_score = min(total_eth * 50, 50)
+                diversity_score = min(unique_wallets * 8, 30)
+                quality_score = min((avg_score / 100) * 20, 20)
+                
+                # Web3 heuristic bonus using safe conversions
+                heuristic_bonus = 0
+                if safe_bool_conversion(token_df['is_verified'].any()):
+                    heuristic_bonus += 10
+                if safe_bool_conversion(token_df['has_liquidity'].any()):
+                    heuristic_bonus += 8
+                
+                total_score = volume_score + diversity_score + quality_score + heuristic_bonus
+                
+                scores[token] = {
+                    'total_score': total_score,
+                    'volume_score': volume_score,
+                    'diversity_score': diversity_score,
+                    'quality_score': quality_score,
+                    'web3_bonus': heuristic_bonus,
+                    'ai_enhanced': False,
+                    'confidence': 0.7,
+                    'is_verified': safe_bool_conversion(token_df['is_verified'].any()),
+                    'has_liquidity': safe_bool_conversion(token_df['has_liquidity'].any())
+                }
+            
+            return {
+                'scores': scores,
+                'analysis_type': analysis_type,
+                'enhanced': False,
+                'web3_enhanced': True,
+                'fallback_mode': True
+            }
+            
+        except Exception as e:
+            logger.error(f"Basic AI analysis failed: {e}")
+            return self._create_empty_result(analysis_type)
+    
+    # ============================================================================
+    # CLEANUP
+    # ============================================================================
+    
     async def cleanup(self):
-        """Cleanup Web3 session"""
-        if self._web3_session:
-            await self._web3_session.close()
-            self._web3_session = None
+        """Cleanup AI system resources including web3_utils service"""
+        try:
+            # Cleanup web3_utils global service
+            await cleanup_web3_service()
+            logger.info("AI system cleanup completed with web3_utils service cleanup")
+        except Exception as e:
+            logger.error(f"Error during AI system cleanup: {e}")
+
+# =============================================================================
+# LEGACY COMPATIBILITY FUNCTIONS (for backward compatibility)
+# =============================================================================
+
+# These functions are kept for backward compatibility but now use web3_utils internally
+
+def extract_contract_address_legacy(transfer: Dict) -> str:
+    """Legacy function - now uses web3_utils"""
+    from utils.web3_utils import extract_contract_address
+    return extract_contract_address(transfer)
+
+def is_excluded_token_legacy(asset: str, contract_address: str = None) -> bool:
+    """Legacy function - now uses web3_utils"""
+    from utils.web3_utils import is_excluded_token
+    return is_excluded_token(asset, contract_address)
+
+def calculate_eth_spent_legacy(outgoing_transfers: List[Dict], target_tx: str, target_block: str) -> float:
+    """Legacy function - now uses web3_utils"""
+    from utils.web3_utils import calculate_eth_spent
+    return calculate_eth_spent(outgoing_transfers, target_tx, target_block)
+
+def calculate_eth_received_legacy(incoming_transfers: List[Dict], target_tx: str, target_block: str) -> float:
+    """Legacy function - now uses web3_utils"""
+    from utils.web3_utils import calculate_eth_received
+    return calculate_eth_received(incoming_transfers, target_tx, target_block)
+
+def parse_timestamp_legacy(transfer: Dict, block_number: int = None) -> datetime:
+    """Legacy function - now uses web3_utils"""
+    from utils.web3_utils import parse_timestamp
+    return parse_timestamp(transfer, block_number)

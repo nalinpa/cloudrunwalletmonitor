@@ -11,3 +11,6 @@ __pycache__
 .idea
 node_modules
 fix.ps1
+Dockerfile
+Dockerfile.*
+.dockerignore

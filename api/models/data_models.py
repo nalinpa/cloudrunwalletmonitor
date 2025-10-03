@@ -43,20 +43,21 @@ class TransferType(Enum):
     
 @dataclass
 class Transfer:
-    """Data model for individual transfer records"""
     wallet_address: str
     token_address: str
-    transfer_type: TransferType  # buy or sell
+    transfer_type: TransferType
     timestamp: datetime
     cost_in_eth: float
-    transaction_hash: str
-    block_number: int
-    token_amount: float
-    token_symbol: Optional[str] = None
+    cost_in_usd: float = 0.0  # NEW
+    transaction_hash: str = ""
+    block_number: int = 0
+    token_amount: float = 0.0
+    token_symbol: str = ""
     network: str = "ethereum"
-    platform: Optional[str] = None
-    created_at: datetime = None
+    platform: str = ""
+    created_at: Optional[datetime] = None
     wallet_sophistication_score: Optional[float] = None
+    web3_analysis: Optional[Dict] = None
     
     def __post_init__(self):
         if self.created_at is None:

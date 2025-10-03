@@ -1,5 +1,5 @@
 import pandas as pd
-import np as np
+import numpy as np
 import logging
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timedelta
@@ -149,6 +149,7 @@ class UnifiedDataProcessor:
         
         return True, "verified"
     
+    
     def _calculate_trade_quality(self, eth_value: float) -> float:
         """Calculate quality score for a trade (0-100)"""
         if eth_value >= 1.0:
@@ -163,6 +164,26 @@ class UnifiedDataProcessor:
             return 60.0
         else:
             return 50.0
+        
+    async def store_verified_trades(self, purchases: List, analysis_type: str, scores: Dict = None):
+        """Store verified trades if BigQuery service is available"""
+        if not self.bigquery_transfer_service:
+            logger.debug("BigQuery service not available, skipping verified trades storage")
+            return 0
+        
+        try:
+            stored_count = await self.bigquery_transfer_service.store_verified_trades_batch(
+                purchases, analysis_type, scores
+            )
+            
+            if stored_count > 0:
+                logger.info(f"✅ Stored {stored_count} verified trades to BigQuery")
+            
+            return stored_count
+            
+        except Exception as e:
+            logger.error(f"Failed to store verified trades: {e}")
+            return 0
     
     # ============================================================================
     # PROCESSING WITH QUALITY FILTERING

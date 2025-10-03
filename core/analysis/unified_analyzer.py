@@ -1,11 +1,11 @@
+# core/analysis/unified_analyzer.py - MORALIS + BIGQUERY ONLY
 import logging
 import time
 from typing import List, Dict, Optional
 from datetime import datetime
 
-from services.database.database_client import DatabaseService
 from services.database.bigquery_client import BigQueryTransferService
-from services.blockchain.alchemy_client import AlchemyService
+from services.blockchain.moralis_client import MoralisService
 from api.models.data_models import AnalysisResult, WalletInfo, Purchase
 from services.database.data_processor import UnifiedDataProcessor
 from utils.config import Config
@@ -13,40 +13,50 @@ from utils.config import Config
 logger = logging.getLogger(__name__)
 
 class UnifiedAnalyzer:
-    """Single analyzer for both buy and sell analysis - eliminates 50% duplication"""
+    """Single analyzer for both buy and sell analysis - Moralis + BigQuery only"""
     
     def __init__(self, network: str):
         self.network = network
         self.config = Config()
         
-        # Shared services - no duplication
-        self.db_service = DatabaseService(self.config)
-        self.bigquery_transfer_service = BigQueryTransferService(self.config)
-        self.alchemy_service = AlchemyService(self.config)
+        # BigQuery for ALL data (wallets + transfers)
+        self.bigquery_service = BigQueryTransferService(self.config)
+        
+        # Moralis for blockchain data
+        self.moralis_service = MoralisService(self.config)
+        
+        # Data processor
         self.data_processor = UnifiedDataProcessor()
         
         self._initialized = False
         
-        # Shared stats tracking
+        # Stats tracking
         self.stats = {
             "analysis_time": 0.0,
             "wallets_processed": 0,
             "transfers_processed": 0,
             "transfers_stored": 0,
+            "verified_trades_stored": 0,
             "ai_enhanced_tokens": 0,
-            "ai_confidence_avg": 0.0
+            "ai_confidence_avg": 0.0,
+            "api_provider": "Moralis",
+            "storage_provider": "BigQuery"
         }
         
-        logger.info(f"Unified analyzer created for network: {network}")
+        logger.info(f"Unified analyzer created for {network} (Moralis + BigQuery)")
     
     async def initialize(self):
-        """Single initialization method"""
+        """Initialize BigQuery and Moralis"""
         try:
             logger.info(f"=== INITIALIZING Unified Analyzer for {self.network} ===")
+            logger.info("📊 Storage: BigQuery (wallets + transfers)")
+            logger.info("🔗 Blockchain: Moralis API")
             
-            await self.db_service.initialize()
-            await self.bigquery_transfer_service.initialize()
-            self.data_processor.set_transfer_service(self.bigquery_transfer_service)
+            # Initialize BigQuery for all storage
+            await self.bigquery_service.initialize()
+            
+            # Connect data processor
+            self.data_processor.set_transfer_service(self.bigquery_service)
             
             self._initialized = True
             logger.info("=== Unified Analyzer initialization COMPLETE ===")
@@ -57,32 +67,35 @@ class UnifiedAnalyzer:
             self._initialized = False
             raise
     
-    async def analyze(self, analysis_type: str, num_wallets: int, days_back: float, store_data: bool = False) -> AnalysisResult:
-        """Unified analysis method for both buy and sell"""
+    async def analyze(self, analysis_type: str, num_wallets: int, days_back: float, 
+                     store_data: bool = False, store_verified_trades: bool = False) -> AnalysisResult:
+        """Unified analysis method using Moralis + BigQuery"""
         start_time = time.time()
         
         try:
             logger.info("=" * 60)
-            logger.info(f"STARTING UNIFIED {analysis_type.upper()} ANALYSIS FOR {self.network.upper()}")
-            logger.info(f"Parameters: {num_wallets} wallets, {days_back} days back")
-            logger.info(f"🗄️ Data Storage: {'ENABLED' if store_data else 'DISABLED'}")
+            logger.info(f"UNIFIED {analysis_type.upper()} ANALYSIS - {self.network.upper()}")
+            logger.info(f"📊 Wallets: {num_wallets} | ⏰ Period: {days_back}d")
+            logger.info(f"🔗 API: Moralis | 💾 Storage: BigQuery")
+            logger.info(f"🗄️ Transfer Storage: {'ON' if store_data else 'OFF'}")
+            logger.info(f"✅ Verified Trades: {'ON' if store_verified_trades else 'OFF'}")
             logger.info("=" * 60)
             
             # Ensure initialization
             if not self._initialized:
                 await self.initialize()
             
-            # Get wallets (shared step)
-            wallets = await self._get_wallets(num_wallets)
+            # Get wallets from BigQuery
+            wallets = await self._get_wallets_from_bigquery(num_wallets)
             if not wallets:
                 return self._empty_result(analysis_type)
             
-            # Get transfers (shared step)
-            all_transfers = await self._get_transfers(wallets, days_back)
+            # Get transfers from Moralis
+            all_transfers = await self._get_transfers_from_moralis(wallets, days_back)
             if not self._validate_transfers(all_transfers):
                 return self._empty_result(analysis_type)
             
-            # Process transfers based on analysis type
+            # Process transfers
             transactions = await self._process_transfers(
                 wallets, all_transfers, analysis_type, store_data
             )
@@ -90,20 +103,31 @@ class UnifiedAnalyzer:
             if not transactions:
                 return self._empty_result(analysis_type)
             
-            # Run AI analysis (shared)
+            # Run AI analysis
             analysis_results = await self.data_processor.analyze_purchases_enhanced(
                 transactions, analysis_type
             )
+            
+            # Store verified trades to BigQuery
+            if store_verified_trades and transactions:
+                scores = analysis_results.get('scores', {})
+                verified_count = await self._store_verified_trades_to_bigquery(
+                    transactions, analysis_type, scores
+                )
+                self.stats["verified_trades_stored"] = verified_count
             
             # Create result
             self.stats["analysis_time"] = time.time() - start_time
             result = self._create_result(analysis_results, transactions, analysis_type)
             
             logger.info("=" * 60)
-            logger.info(f"UNIFIED {analysis_type.upper()} ANALYSIS COMPLETE!")
-            logger.info(f"Time: {self.stats['analysis_time']:.2f}s")
-            logger.info(f"Transactions: {result.total_transactions}")
-            logger.info(f"Tokens: {result.unique_tokens}")
+            logger.info(f"✅ {analysis_type.upper()} ANALYSIS COMPLETE!")
+            logger.info(f"⏱️  Time: {self.stats['analysis_time']:.2f}s")
+            logger.info(f"📈 Transactions: {result.total_transactions}")
+            logger.info(f"🪙 Tokens: {result.unique_tokens}")
+            logger.info(f"💰 ETH Volume: {result.total_eth_value:.4f}")
+            if store_verified_trades:
+                logger.info(f"✅ Verified Trades: {self.stats['verified_trades_stored']}")
             logger.info("=" * 60)
             
             return result
@@ -111,43 +135,69 @@ class UnifiedAnalyzer:
         except Exception as e:
             self.stats["analysis_time"] = time.time() - start_time
             logger.error(f"Unified {analysis_type} analysis failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return self._empty_result(analysis_type)
     
-    async def _get_wallets(self, num_wallets: int) -> List[WalletInfo]:
-        """Shared wallet retrieval"""
+    async def _get_wallets_from_bigquery(self, num_wallets: int) -> List[WalletInfo]:
+        """Get wallets from BigQuery smart_wallets table"""
         step_start = time.time()
-        wallets = await self.db_service.get_top_wallets(self.network, num_wallets)
         
-        if wallets:
-            logger.info(f"✓ Retrieved {len(wallets)} wallets in {time.time() - step_start:.2f}s")
-            self.stats["wallets_processed"] = len(wallets)
-        
-        return wallets
+        try:
+            # Query BigQuery for top wallets by score
+            wallets = await self.bigquery_service.get_top_wallets(
+                self.network, num_wallets
+            )
+            
+            if wallets:
+                logger.info(f"✓ BigQuery: Retrieved {len(wallets)} wallets in {time.time() - step_start:.2f}s")
+                self.stats["wallets_processed"] = len(wallets)
+            else:
+                logger.warning(f"No wallets found in BigQuery for {self.network}")
+            
+            return wallets
+            
+        except Exception as e:
+            logger.error(f"Failed to get wallets from BigQuery: {e}")
+            return []
     
-    async def _get_transfers(self, wallets: List[WalletInfo], days_back: float) -> Dict:
-        """Shared transfer retrieval"""
-        # Get block range
-        start_block, end_block = await self.alchemy_service.get_block_range(self.network, days_back)
-        if start_block == 0:
-            logger.error("Failed to get block range")
+    async def _get_transfers_from_moralis(self, wallets: List[WalletInfo], days_back: float) -> Dict:
+        """Get transfers from Moralis API"""
+        try:
+            # Get block range from Moralis
+            logger.info(f"🔗 Moralis: Getting block range for {days_back} days...")
+            start_block, end_block = await self.moralis_service.get_block_range(
+                self.network, days_back
+            )
+            
+            if start_block == 0:
+                logger.error("Failed to get block range from Moralis")
+                return {}
+            
+            logger.info(f"✓ Moralis: Blocks {start_block:,} to {end_block:,}")
+            
+            # Get transfers from Moralis
+            wallet_addresses = [w.address for w in wallets]
+            logger.info(f"🔗 Moralis: Fetching transfers for {len(wallet_addresses)} wallets...")
+            
+            all_transfers = await self.moralis_service.get_transfers_batch(
+                self.network, wallet_addresses, start_block, end_block
+            )
+            
+            # Log transfer stats
+            total_transfers = sum(
+                len(transfers.get('incoming', [])) + len(transfers.get('outgoing', []))
+                for transfers in all_transfers.values()
+            )
+            
+            self.stats["transfers_processed"] = total_transfers
+            logger.info(f"✓ Moralis: Processed {total_transfers} transfers")
+            
+            return all_transfers
+            
+        except Exception as e:
+            logger.error(f"Failed to get transfers from Moralis: {e}")
             return {}
-        
-        # Get transfers
-        wallet_addresses = [w.address for w in wallets]
-        all_transfers = await self.alchemy_service.get_transfers_batch(
-            self.network, wallet_addresses, start_block, end_block
-        )
-        
-        # Log transfer stats
-        total_transfers = sum(
-            len(transfers.get('incoming', [])) + len(transfers.get('outgoing', []))
-            for transfers in all_transfers.values()
-        )
-        
-        self.stats["transfers_processed"] = total_transfers
-        logger.info(f"✓ Processed {total_transfers} transfers")
-        
-        return all_transfers
     
     def _validate_transfers(self, all_transfers: Dict) -> bool:
         """Validate transfers exist"""
@@ -165,8 +215,56 @@ class UnifiedAnalyzer:
                 wallets, all_transfers, self.network, store_data
             )
     
-    def _create_result(self, analysis_results: Dict, transactions: List[Purchase], analysis_type: str) -> AnalysisResult:
-        """Shared result creation logic"""
+    async def _store_verified_trades_to_bigquery(self, transactions: List[Purchase], 
+                                                 analysis_type: str, scores: Dict) -> int:
+        """Store verified trades with AI scores to BigQuery"""
+        try:
+            # This would be implemented in BigQueryTransferService
+            # For now, use existing transfer storage
+            logger.info(f"💾 Storing {len(transactions)} verified trades to BigQuery...")
+            
+            # Convert to Transfer records
+            from api.models.data_models import Transfer, TransferType
+            
+            transfer_records = []
+            for tx in transactions:
+                transfer_type = TransferType.BUY if analysis_type == 'buy' else TransferType.SELL
+                
+                # Get AI score for this token
+                token_scores = scores.get(tx.token_bought, {})
+                ai_score = token_scores.get('total_score', 0)
+                
+                # Create Transfer record with AI score
+                transfer = Transfer(
+                    wallet_address=tx.wallet_address,
+                    token_address=tx.web3_analysis.get('contract_address', '') if tx.web3_analysis else '',
+                    transfer_type=transfer_type,
+                    timestamp=tx.timestamp,
+                    cost_in_eth=tx.eth_spent if analysis_type == 'buy' else tx.amount_received,
+                    transaction_hash=tx.transaction_hash,
+                    block_number=tx.block_number,
+                    token_amount=tx.amount_received,
+                    token_symbol=tx.token_bought,
+                    network=self.network,
+                    platform=tx.platform,
+                    wallet_sophistication_score=tx.sophistication_score
+                )
+                
+                transfer_records.append(transfer)
+            
+            # Store to BigQuery
+            stored = await self.bigquery_service.store_transfers_batch(transfer_records)
+            logger.info(f"✓ BigQuery: Stored {stored} verified trades")
+            
+            return stored
+            
+        except Exception as e:
+            logger.error(f"Failed to store verified trades: {e}")
+            return 0
+    
+    def _create_result(self, analysis_results: Dict, transactions: List[Purchase], 
+                      analysis_type: str) -> AnalysisResult:
+        """Create analysis result"""
         scores = analysis_results.get('scores', {})
         
         # Ensure basic scores exist
@@ -221,12 +319,10 @@ class UnifiedAnalyzer:
         
         for token, token_transactions in token_groups.items():
             if analysis_type == 'sell':
-                # Sell scoring
                 total_eth = sum(t.amount_received for t in token_transactions)
                 volume_score = min(total_eth * 100, 60)
                 eth_bonus = 20 if total_eth > 1.0 else 10 if total_eth > 0.5 else 5 if total_eth > 0.1 else 0
             else:
-                # Buy scoring  
                 total_eth = sum(t.eth_spent for t in token_transactions)
                 volume_score = min(total_eth * 50, 50)
                 eth_bonus = 20 if total_eth > 5.0 else 15 if total_eth > 2.0 else 10 if total_eth > 1.0 else 5 if total_eth > 0.5 else 0
@@ -251,7 +347,8 @@ class UnifiedAnalyzer:
         
         return scores
     
-    def _create_ranked_tokens(self, scores: Dict, transactions: List[Purchase], analysis_type: str) -> List:
+    def _create_ranked_tokens(self, scores: Dict, transactions: List[Purchase], 
+                             analysis_type: str) -> List:
         """Create ranked tokens list"""
         ranked_tokens = []
         
@@ -259,27 +356,27 @@ class UnifiedAnalyzer:
         contract_lookup = {t.token_bought: t.web3_analysis.get('contract_address', '') 
                           for t in transactions if t.web3_analysis}
         
-        # Purchase stats
-        purchase_stats = {}
+        # Transaction stats
+        tx_stats = {}
         for transaction in transactions:
             token = transaction.token_bought
-            if token not in purchase_stats:
-                purchase_stats[token] = {
+            if token not in tx_stats:
+                tx_stats[token] = {
                     'total_eth': 0, 'count': 0, 'wallets': set(), 'scores': []
                 }
             
             if analysis_type == 'sell':
-                purchase_stats[token]['total_eth'] += transaction.amount_received
+                tx_stats[token]['total_eth'] += transaction.amount_received
             else:
-                purchase_stats[token]['total_eth'] += transaction.eth_spent
+                tx_stats[token]['total_eth'] += transaction.eth_spent
                 
-            purchase_stats[token]['count'] += 1
-            purchase_stats[token]['wallets'].add(transaction.wallet_address)
-            purchase_stats[token]['scores'].append(transaction.sophistication_score or 0)
+            tx_stats[token]['count'] += 1
+            tx_stats[token]['wallets'].add(transaction.wallet_address)
+            tx_stats[token]['scores'].append(transaction.sophistication_score or 0)
         
         # Create ranked results
         for token, score_data in scores.items():
-            stats = purchase_stats.get(token, {'total_eth': 0, 'count': 1, 'wallets': set(), 'scores': [0]})
+            stats = tx_stats.get(token, {'total_eth': 0, 'count': 1, 'wallets': set(), 'scores': [0]})
             contract_address = contract_lookup.get(token, '')
             
             # Token data based on analysis type
@@ -322,7 +419,7 @@ class UnifiedAnalyzer:
         return ranked_tokens
     
     def _empty_result(self, analysis_type: str) -> AnalysisResult:
-        """Shared empty result"""
+        """Empty result"""
         return AnalysisResult(
             network=self.network,
             analysis_type=analysis_type,
@@ -335,39 +432,44 @@ class UnifiedAnalyzer:
         )
     
     async def cleanup(self):
-        """Shared cleanup"""
+        """Cleanup resources"""
         try:
-            if self.db_service:
-                await self.db_service.cleanup()
-            if self.bigquery_transfer_service:
-                await self.bigquery_transfer_service.cleanup()
+            if self.bigquery_service:
+                await self.bigquery_service.cleanup()
+            logger.info("Unified analyzer cleanup complete")
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
     
     async def get_analysis_health(self) -> Dict:
-        """Shared health check"""
+        """Health check"""
         return {
             'network': self.network,
             'initialized': self._initialized,
-            'ai_enhancement_available': bool(self.data_processor._enhanced_scoring_enabled if self.data_processor else False),
+            'api_provider': 'Moralis',
+            'storage_provider': 'BigQuery',
+            'ai_enhancement_available': bool(
+                self.data_processor._enhanced_scoring_enabled 
+                if self.data_processor else False
+            ),
             'last_analysis_stats': self.stats,
             'services_status': {
-                'database': bool(self.db_service),
-                'bigquery': bool(self.bigquery_transfer_service),
-                'alchemy': bool(self.alchemy_service),
+                'bigquery': bool(self.bigquery_service),
+                'moralis': bool(self.moralis_service),
                 'data_processor': bool(self.data_processor)
             }
         }
 
-# Backwards compatibility - keep same interface
+# Backwards compatibility wrappers
 class CloudBuyAnalyzer(UnifiedAnalyzer):
-    """Buy-specific wrapper around unified analyzer"""
+    """Buy-specific wrapper"""
     
-    async def analyze(self, num_wallets: int, days_back: float, store_data: bool = False) -> AnalysisResult:
-        return await super().analyze('buy', num_wallets, days_back, store_data)
+    async def analyze(self, num_wallets: int, days_back: float, 
+                     store_data: bool = False, store_verified_trades: bool = False) -> AnalysisResult:
+        return await super().analyze('buy', num_wallets, days_back, store_data, store_verified_trades)
 
 class CloudSellAnalyzer(UnifiedAnalyzer):
-    """Sell-specific wrapper around unified analyzer"""
+    """Sell-specific wrapper"""
     
-    async def analyze(self, num_wallets: int, days_back: float, store_data: bool = False) -> AnalysisResult:
-        return await super().analyze('sell', num_wallets, days_back, store_data)
+    async def analyze(self, num_wallets: int, days_back: float, 
+                     store_data: bool = False, store_verified_trades: bool = False) -> AnalysisResult:
+        return await super().analyze('sell', num_wallets, days_back, store_data, store_verified_trades)

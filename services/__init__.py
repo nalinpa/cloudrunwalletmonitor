@@ -1,5 +1,5 @@
-from .database.database_client import DatabaseService
-from .blockchain.alchemy_client import AlchemyService
+from services.blockchain.moralis_client import MoralisService
+from services.database.bigquery_client import BigQueryTransferService
 from .database.data_processor import UnifiedDataProcessor
 
 # Import unified notifications
@@ -12,8 +12,8 @@ from .notifications.notifications import (
 )
 
 __all__ = [
-    'DatabaseService', 
-    'AlchemyService', 
+    'MoralisService', 
+    'BigQueryTransferService',
     'UnifiedDataProcessor',
     'telegram_service',
     'telegram_client',

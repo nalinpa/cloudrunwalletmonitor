@@ -1,3 +1,4 @@
+# utils/config.py - UPDATED FOR MORALIS
 import os
 from typing import List, Dict, Any
 import logging 
@@ -5,7 +6,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 class Config:
-    """Unified configuration for all services - eliminates duplicate config loading"""
+    """Unified configuration - Updated for Moralis API"""
     
     def __init__(self):
         
@@ -19,8 +20,9 @@ class Config:
         self.bigquery_wallets_table = os.getenv('BIGQUERY_WALLETS_TABLE', 'smart_wallets')
         self.bigquery_location = os.getenv('BIGQUERY_LOCATION', 'asia-southeast1')
         
-        # API Keys
-        self.alchemy_api_key = os.getenv('ALCHEMY_API_KEY')
+        # API Keys - UPDATED
+        self.moralis_api_key = os.getenv('MORALIS_API_KEY')  # NEW: Moralis API key
+        self.alchemy_api_key = os.getenv('ALCHEMY_API_KEY')  # DEPRECATED: Keep for migration period
         self.etherscan_api_key = os.getenv('ETHERSCAN_API_KEY')
         
         # Telegram
@@ -31,11 +33,11 @@ class Config:
         self.environment = os.getenv('ENVIRONMENT', 'production')
         self.log_level = os.getenv('LOG_LEVEL', 'INFO')
         
-        # All network configurations in one place
+        # Network configurations - UPDATED FOR MORALIS
         self.network_config = {
             'ethereum': {
                 'chain_id': 1,
-                'alchemy_endpoint': f'https://eth-mainnet.g.alchemy.com/v2/{self.alchemy_api_key}',
+                'moralis_chain': '0x1',  # NEW: Moralis chain identifier
                 'explorer': 'etherscan.io',
                 'blocks_per_hour': 300,
                 'wallet_limit': 100,
@@ -46,7 +48,7 @@ class Config:
             },
             'base': {
                 'chain_id': 8453,
-                'alchemy_endpoint': f'https://base-mainnet.g.alchemy.com/v2/{self.alchemy_api_key}',
+                'moralis_chain': '0x2105',  # NEW: Base chain identifier
                 'explorer': 'basescan.org',
                 'blocks_per_hour': 1800,
                 'wallet_limit': 100,
@@ -57,14 +59,9 @@ class Config:
             }
         }
         
-        # Derived configurations for backwards compatibility
+        # Derived configurations
         self.supported_networks = list(self.network_config.keys())
         self.supported_analysis_types = ['buy', 'sell']
-        
-        self.alchemy_endpoints = {
-            network: config['alchemy_endpoint'] 
-            for network, config in self.network_config.items()
-        }
         
         self.blocks_per_hour = {
             network: config['blocks_per_hour']
@@ -76,6 +73,10 @@ class Config:
             for network, config in self.network_config.items()
         }
         
+        # Moralis-specific configuration
+        self.moralis_base_url = "https://deep-index.moralis.io/api/v2.2"
+        self.moralis_rate_limit = 0.2  # 5 requests per second for free tier
+        
         # API settings
         self.etherscan_endpoint = "https://api.etherscan.io/v2/api"
         self.etherscan_api_rate_limit = 0.2
@@ -85,18 +86,21 @@ class Config:
         self.max_days_back = 7.0
         self.timeout_seconds = 300
         
-        logger.info(f"Config loaded: BigQuery={self.bigquery_project_id}, Networks={len(self.supported_networks)}")
+        # Log configuration
+        api_provider = "Moralis" if self.moralis_api_key else "Alchemy (deprecated)"
+        logger.info(f"Config loaded: Provider={api_provider}, BigQuery={self.bigquery_project_id}, Networks={len(self.supported_networks)}")
     
     def get_network_config(self, network: str) -> Dict[str, Any]:
         """Get complete network configuration"""
         return self.network_config.get(network.lower(), self.network_config['ethereum'])
     
     def validate(self) -> List[str]:
-        """Validate configuration"""
+        """Validate configuration - UPDATED"""
         errors = []
         
-        if not self.alchemy_api_key:
-            errors.append("ALCHEMY_API_KEY not configured")
+        # Check for Moralis API key (required)
+        if not self.moralis_api_key:
+            errors.append("MORALIS_API_KEY not configured (required)")
             
         if not self.bigquery_project_id:
             errors.append("BIGQUERY_PROJECT_ID not configured")
@@ -109,3 +113,8 @@ class Config:
     def is_telegram_configured(self) -> bool:
         """Check Telegram configuration"""
         return bool(self.telegram_bot_token and self.telegram_chat_id and len(self.telegram_bot_token) > 40)
+    
+    def get_moralis_chain_id(self, network: str) -> str:
+        """Get Moralis chain identifier for network"""
+        config = self.get_network_config(network)
+        return config.get('moralis_chain', '0x1')

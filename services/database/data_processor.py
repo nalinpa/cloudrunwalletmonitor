@@ -1,5 +1,5 @@
 import pandas as pd
-import np as np
+import numpy as np
 import logging
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timedelta
@@ -36,8 +36,6 @@ class UnifiedDataProcessor:
         self.min_eth_value = 0.02  # Minimum 0.02 ETH for verified trades
         
         # Services
-        self.bigquery_transfer_service = None
-        self._last_stored_count = 0
         self._last_quality_score = 1.0
         
         # AI system (lazy loaded)
@@ -50,7 +48,6 @@ class UnifiedDataProcessor:
         # Performance tracking
         self.stats = {
             'transfers_processed': 0,
-            'transfers_stored': 0,
             'ai_enhanced_tokens': 0,
             'web3_enriched_tokens': 0
         }
@@ -169,19 +166,14 @@ class UnifiedDataProcessor:
     # ============================================================================
     
     async def process_transfers_to_purchases(self, wallets: List[WalletInfo], 
-                                           all_transfers: Dict, network: str,
-                                           store_data: bool = False) -> List[Purchase]:
-        """Process transfers with QUALITY FILTERING and optional storage"""
+                                       all_transfers: Dict, network: str) -> List[Purchase]:
+        """Process transfers with QUALITY FILTERING - analysis only, no storage"""
         purchases = []
-        verified_transfer_records = []
         rejected_count = {"below_minimum": 0, "excluded_token": 0, "other": 0}
         
         wallet_scores = {w.address: w.score for w in wallets}
         
-        if store_data:
-            logger.info(f"🗄️ STORAGE MODE: Verified trades will be saved (min {self.min_eth_value} ETH)")
-        else:
-            logger.info(f"📊 ANALYSIS MODE: No trade storage (store_data=False)")
+        logger.info(f"📊 ANALYSIS MODE: Processing purchases (min {self.min_eth_value} ETH)")
         
         for wallet in wallets:
             address = wallet.address
@@ -221,7 +213,7 @@ class UnifiedDataProcessor:
                             rejected_count["other"] += 1
                         continue
                     
-                    # Create purchase (always created for analysis)
+                    # Create purchase (for analysis only)
                     purchase = Purchase(
                         transaction_hash=tx_hash,
                         token_bought=asset,
@@ -243,24 +235,6 @@ class UnifiedDataProcessor:
                     )
                     
                     purchases.append(purchase)
-                    
-                    # CONDITIONAL STORAGE: Only if store_data=True
-                    if store_data:
-                        transfer_record = Transfer(
-                            wallet_address=address,
-                            token_address=contract_address,
-                            transfer_type=TransferType.BUY,
-                            timestamp=self._parse_timestamp(transfer, block_number),
-                            cost_in_eth=eth_spent,
-                            transaction_hash=tx_hash,
-                            block_number=block_number,
-                            token_amount=amount,
-                            token_symbol=asset,
-                            network=network,
-                            platform="DEX",
-                            wallet_sophistication_score=wallet_scores.get(address, 0)
-                        )
-                        verified_transfer_records.append(transfer_record)
                 
                 except Exception as e:
                     logger.debug(f"Error processing transfer: {e}")
@@ -270,29 +244,13 @@ class UnifiedDataProcessor:
         total_rejected = sum(rejected_count.values())
         logger.info(f"✅ VERIFIED: {len(purchases)} purchases (min {self.min_eth_value} ETH)")
         logger.info(f"❌ REJECTED: {total_rejected} ({rejected_count['below_minimum']} below min, "
-                   f"{rejected_count['excluded_token']} excluded, {rejected_count['other']} other)")
+                f"{rejected_count['excluded_token']} excluded, {rejected_count['other']} other)")
         
-        # ACTUAL STORAGE
-        if store_data and self.bigquery_transfer_service and verified_transfer_records:
-            try:
-                logger.info(f"💾 Storing {len(verified_transfer_records)} verified trades to BigQuery...")
-                stored_count = await self.bigquery_transfer_service.store_transfers_batch(
-                    verified_transfer_records
-                )
-                self._last_stored_count = stored_count
-                logger.info(f"✅ Stored {stored_count} verified trades successfully")
-            except Exception as e:
-                logger.error(f"❌ Failed to store verified trades: {e}")
-                self._last_stored_count = 0
-        elif store_data:
-            logger.warning("⚠️ Storage requested but no verified trades to store")
-            self._last_stored_count = 0
-        else:
-            logger.info(f"📊 Analysis mode: {len(purchases)} purchases processed, none stored")
-            self._last_stored_count = 0
+        # NO STORAGE - analysis only
+        self._last_stored_count = 0
         
         return purchases
-    
+
     async def process_transfers_to_sells(self, wallets: List[WalletInfo], 
                                        all_transfers: Dict, network: str,
                                        store_data: bool = False) -> List[Purchase]:

@@ -78,10 +78,10 @@ class AnalysisHandler:
                 logger.info(f"Creating analyzer: {key}")
                 
                 if analysis_type == 'buy':
-                    from core.analysis.buy_analyzer import CloudBuyAnalyzer
+                    from core.analysis.unified_analyzer import CloudBuyAnalyzer
                     analyzer = CloudBuyAnalyzer(network)
                 else:
-                    from core.analysis.sell_analyzer import CloudSellAnalyzer
+                    from core.analysis.unified_analyzer import CloudSellAnalyzer
                     analyzer = CloudSellAnalyzer(network)
                 
                 await analyzer.initialize()
@@ -207,7 +207,7 @@ class AnalysisHandler:
                 analyzer = await self.get_analyzer(network, analysis_type)
                 
                 # Pass verified trades flag to analyzer
-                result = await analyzer.analyze(num_wallets, days_back, store_data=store_verified_trades)
+                result = await analyzer.analyze(num_wallets, days_back)
                 
                 # Record successful run
                 if self.last_run_tracker and self.last_run_tracker.is_available():

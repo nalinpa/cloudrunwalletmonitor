@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 from google.cloud import bigquery
 from google.cloud.exceptions import NotFound
 import asyncio
@@ -103,9 +103,17 @@ class AlertMomentumTracker:
             logger.info(f"Created alert history table: {table.table_id}")
 
     async def store_alert(self, alert_data: Dict) -> bool:
-        """Store alert with momentum scoring"""
+        """Store alert with enhanced error handling and validation"""
         try:
             if not self.client:
+                logger.warning("BigQuery client not initialized - cannot store alert")
+                return False
+            
+            # Validate required fields
+            required_fields = ['token', 'network', 'alert_type', 'data']
+            missing_fields = [f for f in required_fields if f not in alert_data]
+            if missing_fields:
+                logger.error(f"Missing required alert fields: {missing_fields}")
                 return False
             
             loop = asyncio.get_event_loop()
@@ -118,8 +126,131 @@ class AlertMomentumTracker:
             
         except Exception as e:
             logger.error(f"Error storing alert: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return False
-    
+
+    def _sync_store_alert(self, alert_data: Dict) -> bool:
+        """Store alert with comprehensive data extraction"""
+        try:
+            data = alert_data.get('data', {})
+            ai_data = alert_data.get('ai_data', {})
+            
+            # Generate unique alert ID
+            timestamp_ms = int(datetime.now().timestamp() * 1000)
+            alert_id = f"{alert_data['token']}_{alert_data['network']}_{alert_data['alert_type']}_{timestamp_ms}"
+            
+            # Extract scores with fallbacks
+            main_score = self._safe_float(
+                data.get('alpha_score') or 
+                data.get('sell_pressure_score') or 
+                data.get('total_score') or 
+                ai_data.get('total_score'),
+                0.0
+            )
+            
+            # Calculate momentum score
+            if alert_data['alert_type'] == 'buy':
+                momentum_score = main_score * 1.0  # Positive for buys
+            else:  # sell
+                momentum_score = main_score * -0.8  # Negative for sells
+            
+            # Extract contract address with multiple fallbacks
+            contract_address = (
+                data.get('contract_address') or 
+                data.get('ca') or 
+                ai_data.get('contract_address') or 
+                ai_data.get('ca') or
+                ''
+            )
+            
+            # Build comprehensive row data
+            row_data = {
+                "alert_id": str(alert_id),
+                "token_symbol": str(alert_data['token']),
+                "contract_address": str(contract_address)[:42],  # Ensure max length
+                "network": str(alert_data['network']),
+                "analysis_type": str(alert_data['alert_type']),
+                "alert_timestamp": datetime.utcnow().isoformat(),
+                "score": self._safe_float(main_score),
+                "eth_volume": self._safe_float(
+                    data.get('total_eth_spent') or 
+                    data.get('total_eth_received') or 
+                    data.get('total_eth_value')
+                ),
+                "wallet_count": self._safe_int(data.get('wallet_count')),
+                "confidence": self._safe_float(ai_data.get('confidence')),
+                "ai_enhanced": self._safe_bool(ai_data.get('ai_enhanced', False)),
+                "is_verified": self._safe_bool(ai_data.get('is_verified')),
+                "has_liquidity": self._safe_bool(ai_data.get('has_liquidity')),
+                "honeypot_risk": self._safe_float(ai_data.get('honeypot_risk')),
+                "whale_coordination": self._safe_bool(ai_data.get('whale_coordination_detected')),
+                "pump_signals": self._safe_bool(ai_data.get('pump_signals_detected')),
+                "smart_money_active": self._safe_bool(ai_data.get('has_smart_money')),
+                "created_at": datetime.utcnow().isoformat()
+            }
+            
+            # Validate before inserting
+            if not row_data['token_symbol'] or not row_data['network']:
+                logger.error("Invalid alert data: missing token or network")
+                return False
+            
+            # Store to BigQuery
+            table = self.client.get_table(self.table_id)
+            errors = self.client.insert_rows_json(table, [row_data])
+            
+            if not errors:
+                logger.info(
+                    f"✅ Stored alert: {alert_data['token']} "
+                    f"({alert_data['alert_type']}) - "
+                    f"Score: {momentum_score:.1f}, "
+                    f"ETH: {row_data['eth_volume']:.4f}"
+                )
+                return True
+            else:
+                logger.error(f"BigQuery insert errors: {errors}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Alert storage failed: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return False
+
+    # Add helper methods to the class
+    def _safe_float(self, value: Any, default: float = 0.0) -> float:
+        """Safely convert to float"""
+        if value is None:
+            return default
+        try:
+            if hasattr(value, 'item'):  # numpy scalar
+                return float(value.item())
+            return float(value)
+        except (ValueError, TypeError, AttributeError):
+            return default
+
+    def _safe_int(self, value: Any, default: int = 0) -> int:
+        """Safely convert to int"""
+        if value is None:
+            return default
+        try:
+            if hasattr(value, 'item'):  # numpy scalar
+                return int(value.item())
+            return int(value)
+        except (ValueError, TypeError, AttributeError):
+            return default
+
+    def _safe_bool(self, value: Any, default: bool = False) -> bool:
+        """Safely convert to bool"""
+        if value is None:
+            return default
+        try:
+            if hasattr(value, 'item'):  # numpy bool
+                return bool(value.item())
+            return bool(value)
+        except (ValueError, TypeError, AttributeError):
+            return default
+        
     def _sync_store_alert(self, alert_data: Dict) -> bool:
         """Store alert with basic momentum scoring"""
         try:
@@ -249,24 +380,32 @@ class AlertMomentumTracker:
             return {}
     
     def _sync_get_token_momentum(self, token_symbol: str, network: str, days_back: int) -> Dict:
-        """Calculate momentum using existing schema fields"""
+        """Calculate momentum with optimized query"""
         try:
             query = f"""
-            SELECT 
-                alert_timestamp,
-                analysis_type,
-                score,
-                eth_volume,
-                wallet_count,
-                confidence,
-                whale_coordination,
-                pump_signals,
-                smart_money_active
-            FROM `{self.table_id}`
-            WHERE token_symbol = @token_symbol
-            AND network = @network
-            AND alert_timestamp >= @cutoff_date
+            WITH ranked_alerts AS (
+                SELECT 
+                    alert_timestamp,
+                    analysis_type,
+                    score,
+                    eth_volume,
+                    wallet_count,
+                    confidence,
+                    whale_coordination,
+                    pump_signals,
+                    smart_money_active,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY DATE(alert_timestamp) 
+                        ORDER BY alert_timestamp DESC
+                    ) as daily_rank
+                FROM `{self.table_id}`
+                WHERE token_symbol = @token_symbol
+                AND network = @network
+                AND alert_timestamp >= @cutoff_date
+            )
+            SELECT * FROM ranked_alerts
             ORDER BY alert_timestamp DESC
+            LIMIT 100
             """
             
             job_config = bigquery.QueryJobConfig(
@@ -282,88 +421,64 @@ class AlertMomentumTracker:
             results = list(query_job.result())
             
             if not results:
-                return {"momentum_detected": False, "net_momentum_score": 0, "alert_count": 0}
+                return {
+                    "momentum_detected": False, 
+                    "net_momentum_score": 0, 
+                    "alert_count": 0,
+                    "reason": "no_alerts_found"
+                }
             
-            # Calculate momentum using scores
+            # Calculate momentum metrics
             buy_momentum = 0
             sell_momentum = 0
-            total_alerts = len(results)
-            
-            buy_alerts = []
-            sell_alerts = []
             
             for result in results:
-                # Apply time decay
                 hours_ago = (datetime.utcnow() - result.alert_timestamp.replace(tzinfo=None)).total_seconds() / 3600
-                time_decay = 0.95 ** (hours_ago / 24)  # Daily decay
-                
+                time_decay = 0.95 ** (hours_ago / 24)
                 score = float(result.score)
                 
                 if result.analysis_type == 'buy':
-                    adjusted_score = score * time_decay
-                    buy_momentum += adjusted_score
-                    buy_alerts.append(result)
-                else:  # sell
-                    adjusted_score = score * 0.8 * time_decay  # Discount sell scores
-                    sell_momentum += adjusted_score
-                    sell_alerts.append(result)
+                    buy_momentum += score * time_decay
+                else:
+                    sell_momentum += score * 0.8 * time_decay
             
-            # Net momentum = Buys - Sells
-            net_momentum_score = buy_momentum - sell_momentum
+            net_momentum = buy_momentum - sell_momentum
             
-            # Momentum classification
-            momentum_strength = "NEUTRAL"
-            if net_momentum_score >= 100:
-                momentum_strength = "VERY_BULLISH"
-            elif net_momentum_score >= 50:
-                momentum_strength = "BULLISH"
-            elif net_momentum_score >= 20:
-                momentum_strength = "SLIGHTLY_BULLISH"
-            elif net_momentum_score <= -50:
-                momentum_strength = "BEARISH"
-            elif net_momentum_score <= -20:
-                momentum_strength = "SLIGHTLY_BEARISH"
-            
-            # Calculate velocity
-            if len(results) >= 2:
-                recent_alerts = [r for r in results if (datetime.utcnow() - r.alert_timestamp.replace(tzinfo=None)).total_seconds() / 3600 <= 12]
-                momentum_velocity = len(recent_alerts) / max(len(results), 1)
+            # Enhanced classification
+            if net_momentum >= 100:
+                strength = "VERY_BULLISH"
+                emoji = "🚀"
+            elif net_momentum >= 50:
+                strength = "BULLISH"
+                emoji = "📈"
+            elif net_momentum >= 20:
+                strength = "SLIGHTLY_BULLISH"
+                emoji = "⬆️"
+            elif net_momentum <= -50:
+                strength = "BEARISH"
+                emoji = "📉"
+            elif net_momentum <= -20:
+                strength = "SLIGHTLY_BEARISH"
+                emoji = "⬇️"
             else:
-                momentum_velocity = 0
-            
-            # Detect signals
-            has_whale_activity = any(r.whale_coordination for r in results if r.whale_coordination)
-            has_pump_signals = any(r.pump_signals for r in results if r.pump_signals)
-            has_smart_money = any(r.smart_money_active for r in results if r.smart_money_active)
-            
-            # Calculate averages
-            avg_confidence = sum(float(r.confidence) for r in results if r.confidence) / len([r for r in results if r.confidence]) if any(r.confidence for r in results) else 0
-            total_volume = sum(float(r.eth_volume) for r in results)
+                strength = "NEUTRAL"
+                emoji = "➡️"
             
             return {
-                "momentum_detected": abs(net_momentum_score) >= 20,
-                "net_momentum_score": round(net_momentum_score, 2),
-                "momentum_strength": momentum_strength,
-                "momentum_velocity": round(momentum_velocity, 3),
+                "momentum_detected": abs(net_momentum) >= 20,
+                "net_momentum_score": round(net_momentum, 2),
+                "momentum_strength": strength,
+                "momentum_emoji": emoji,
                 "buy_momentum": round(buy_momentum, 2),
                 "sell_momentum": round(sell_momentum, 2),
-                "alert_count": total_alerts,
-                "buy_alerts": len(buy_alerts),
-                "sell_alerts": len(sell_alerts),
-                "total_volume": round(total_volume, 4),
-                "avg_confidence": round(avg_confidence, 3),
+                "alert_count": len(results),
                 "days_analyzed": days_back,
-                "whale_activity": has_whale_activity,
-                "pump_activity": has_pump_signals,
-                "smart_money_activity": has_smart_money,
-                "trending_direction": "UP" if net_momentum_score > 0 else "DOWN" if net_momentum_score < 0 else "SIDEWAYS"
+                "confidence": "high" if len(results) >= 10 else "medium" if len(results) >= 5 else "low"
             }
             
         except Exception as e:
             logger.error(f"Momentum calculation failed: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            return {}
+            return {"momentum_detected": False, "error": str(e)}
     
     async def get_trending_tokens(self, network: str = None, hours_back: int = 24, limit: int = 10) -> List[Dict]:
         """Get trending tokens with momentum scoring"""

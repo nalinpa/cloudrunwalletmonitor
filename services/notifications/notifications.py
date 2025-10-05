@@ -206,11 +206,11 @@ class NotificationFormatter:
     
     @staticmethod
     def format_analysis_start(network: str, analysis_type: str, num_wallets: int, 
-                            days_back: float, store_data: bool) -> str:
+                            days_back: float, store_alerts: bool) -> str:
         """✅ UPDATED: Using consolidated network info"""
         network_info = get_network_info(network)
         timing_info = f"⏰ {days_back}d back"
-        storage_info = f"🗄️ Storage: {'Enabled' if store_data else 'Disabled'}"
+        storage_info = f"📊 Alert Storage: {'Enabled' if store_alerts else 'Disabled'}"
         
         return f"""🚀 **ANALYSIS STARTED**
 
@@ -229,47 +229,36 @@ class NotificationFormatter:
         """✅ UPDATED: Using consolidated network info"""
         network_info = get_network_info(network)
         
-        storage_info = ""
-        if hasattr(result, 'performance_metrics'):
-            transfers_stored = result.performance_metrics.get('transfers_stored', 0)
-            storage_info = f"\n🗄️ **Transfer Storage:** {transfers_stored if transfers_stored > 0 else 'Disabled'}"
-        
         alert_storage_info = "Enabled" if store_alerts else "Disabled"
-        storage_info += f"\n📊 **Alert Storage:** {alert_storage_info}"
         
         return f"""📊 **{result.analysis_type.upper()} ANALYSIS COMPLETE**
 
 ✅ **Alerts Sent:** {alerts_sent}
 📈 **Total Tokens Found:** {result.unique_tokens}
 💰 **Total ETH Volume:** {result.total_eth_value:.4f}
-🔍 **Filter:** min score {min_alpha_score}{storage_info}
+🔍 **Filter:** min score {min_alpha_score}
+📊 **Alert Storage:** {alert_storage_info}
 
 🌐 **Network:** {network_info['name']} ({network_info['symbol']})
 ⏰ {datetime.now().strftime('%H:%M:%S UTC')}"""
 
 class TelegramService:
-    """Unified Telegram service - consolidates all notification logic"""
+    """Unified Telegram service - consolidates all notification logic with BigQuery alerts"""
     
     def __init__(self, config=None):
         self.config = config
         self.client = TelegramClient()
         self.formatter = NotificationFormatter()
-        self.momentum_tracker = None
+        self.bigquery_service = None  # Will be set externally
         
     def is_configured(self) -> bool:
         """Check if Telegram is configured"""
         return self.client.is_configured()
     
-    async def initialize_momentum_tracking(self, config):
-        """Initialize momentum tracking"""
-        try:
-            from services.tracker.alert_momentum import AlertMomentumTracker
-            self.momentum_tracker = AlertMomentumTracker(config)
-            await self.momentum_tracker.initialize()
-            logger.info("Alert momentum tracking initialized")
-        except Exception as e:
-            logger.error(f"Failed to initialize momentum tracking: {e}")
-            self.momentum_tracker = None
+    def set_bigquery_service(self, bigquery_service):
+        """Set BigQuery service for alert storage"""
+        self.bigquery_service = bigquery_service
+        logger.info("BigQuery service connected to Telegram notifications")
     
     async def send_message(self, message: str, parse_mode: str = "Markdown") -> bool:
         """Send message through client"""
@@ -325,7 +314,7 @@ class TelegramService:
                     "bot_name": bot_info.get('first_name'),
                     "chat_accessible": chat_accessible,
                     "ready_for_notifications": chat_accessible,
-                    "momentum_tracking": bool(self.momentum_tracker),
+                    "bigquery_connected": bool(self.bigquery_service),
                     "version": "consolidated"
                 }
                 
@@ -343,7 +332,7 @@ class TelegramService:
     
     async def send_analysis_notifications(self, result, network: str, max_tokens: int = 7, 
                                         min_alpha_score: float = 50.0, store_alerts: bool = True):
-        """✅ UPDATED: Consolidated notification sending with momentum tracking"""
+        """✅ UPDATED: Consolidated notification sending with BigQuery alert storage"""
         try:
             if not result.ranked_tokens:
                 message = f"📊 **{result.analysis_type.upper()} Analysis Complete** - No tokens found for {network.upper()}"
@@ -357,7 +346,7 @@ class TelegramService:
                 await self._send_no_alerts_message(result, network, min_alpha_score)
                 return
             
-            # Add momentum data and store alerts (if enabled)
+            # Add momentum data and store alerts (if enabled and BigQuery available)
             enhanced_alerts = await self._enhance_with_momentum(qualifying_alerts, store_alerts)
             
             # Send notifications
@@ -399,22 +388,26 @@ class TelegramService:
         return qualifying_alerts
     
     async def _enhance_with_momentum(self, alerts: List[Dict], store_alerts: bool) -> List[Dict]:
-        """Add momentum data and optionally store alerts"""
+        """Add momentum data and optionally store alerts to BigQuery"""
         enhanced_alerts = []
         
         for alert in alerts:
             try:
-                # Get momentum data
+                # Get momentum data (if BigQuery service available)
                 momentum_data = {}
-                if self.momentum_tracker:
-                    momentum_data = await self.momentum_tracker.get_token_momentum(
+                if self.bigquery_service:
+                    momentum_data = await self.bigquery_service.get_token_momentum(
                         alert['token'], alert['network'], days_back=5
                     )
                 alert['momentum_data'] = momentum_data
                 
-                # Store alert (if enabled)
-                if store_alerts and self.momentum_tracker:
-                    await self.momentum_tracker.store_alert(alert)
+                # Store alert to BigQuery (if enabled and service available)
+                if store_alerts and self.bigquery_service:
+                    try:
+                        await self.bigquery_service.store_alert(alert)
+                        logger.info(f"✅ Stored alert to BigQuery: {alert['token']} ({alert['alert_type']})")
+                    except Exception as e:
+                        logger.error(f"Failed to store alert to BigQuery: {e}")
                 
                 enhanced_alerts.append(alert)
                         
@@ -435,12 +428,13 @@ class TelegramService:
                 logger.error(f"Failed to send alert: {e}")
     
     async def _send_trending_summary(self, network: str, analysis_type: str):
-        """Send trending summary if momentum tracker available"""
-        if not self.momentum_tracker:
+        """Send trending summary if BigQuery service available"""
+        if not self.bigquery_service:
+            logger.info("BigQuery service not available - skipping trending summary")
             return
         
         try:
-            trending = await self.momentum_tracker.get_trending_tokens(
+            trending = await self.bigquery_service.get_trending_tokens(
                 network=network, hours_back=24, limit=7
             )
             
@@ -493,10 +487,10 @@ class TelegramService:
     
     async def send_start_notification(self, network: str, analysis_type: str, num_wallets: int,
                                     days_back: float, use_smart_timing: bool, max_tokens: int,
-                                    min_alpha_score: float, store_data: bool = False):
+                                    min_alpha_score: float, store_alerts: bool = True):
         """Send analysis start notification"""
         message = self.formatter.format_analysis_start(
-            network, analysis_type, num_wallets, days_back, store_data
+            network, analysis_type, num_wallets, days_back, store_alerts
         )
         await self.send_message(message)
 
@@ -530,20 +524,6 @@ def check_notification_config():
 def format_alert_message(alert: dict) -> str:
     """✅ UPDATED: Backwards compatible function using consolidated formatting"""
     return NotificationFormatter.format_enhanced_alert(alert)
-
-# ============================================================================
-# REMOVED DUPLICATE FUNCTIONS (now in utils/web3_utils.py):
-# ============================================================================
-
-# ❌ REMOVED: def format_contract_address(contract_address: str) -> str:
-# ❌ REMOVED: def generate_action_links(token: str, contract_address: str, network: str) -> str:
-# ❌ REMOVED: def get_network_info(network: str) -> Dict[str, str]:
-# ❌ REMOVED: def format_token_age(hours: Optional[float]) -> str:
-# ❌ REMOVED: def format_holder_count(count: Optional[int]) -> str:
-# ❌ REMOVED: def get_combined_risk_indicator(...) -> Optional[str]:
-# ❌ REMOVED: Duplicate network configurations and hardcoded constants
-# ❌ REMOVED: Multiple HTTP client implementations
-# ❌ REMOVED: Duplicate message formatting logic
 
 # Export consolidated interface
 __all__ = [
